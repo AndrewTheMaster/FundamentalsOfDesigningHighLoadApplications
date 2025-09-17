@@ -1,0 +1,23 @@
+# Binaries
+*.exe
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+
+# Go build
+bin/
+/dist/
+/build/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+
+# Local data
+/data/
+/tmp/ 
