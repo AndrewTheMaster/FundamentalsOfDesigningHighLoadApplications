@@ -22,7 +22,7 @@ go build
 
 ## Architecture Overview (interfaces)
 
-- Public DB API (`pkg/db`):
+- DB Core API (`pkg/db`):
   - `DB`: `Get/Put/Delete/Write`, iteration (`NewIterator`), snapshots (`NewSnapshot`), maintenance (`CompactRange`, `Flush`, `Close`).
   - Options: `ReadOptions`, `WriteOptions`, `OpenOptions`.
 - Common types (`pkg/types`): `Key`, `Value`, `SequenceNumber`, `ShardID`, `NodeID`, `Term`, `LogIndex`.
