@@ -1,4 +1,5 @@
 # LSMDB (LSM-Tree Key-Value Store)
+![Architecture photo](docs/images/photo_2025-09-18_17-47-05.jpg)
 
 This repository contains a learning-oriented LSM-Tree key-value database implemented in Go. It is structured across five lab stages. This initial commit (Lab 1) defines interfaces and project structure only, with forward-looking design for replication and sharding (Labs 4 and 5).
 
@@ -85,10 +86,3 @@ go build
 - Observability & tests:
   - Pluggable `metrics.Collector` (no-op + Prometheus later).
   - Unit tests for WAL replay, flush, reads, and basic compaction.
-
-## Media
-
-![Architecture photo](docs/images/photo_2025-09-18_17-47-05.jpg)
-
-## License
-MIT 
