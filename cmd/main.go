@@ -22,4 +22,4 @@ func main() {
 
 	fmt.Println("LSMDB stopped")
 	os.Exit(0)
-} 
+}
