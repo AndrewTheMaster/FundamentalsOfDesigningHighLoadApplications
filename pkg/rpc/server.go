@@ -4,16 +4,12 @@ import (
 	"context"
 	"fmt"
 	"lsmdb/pkg/store"
-	"net"
 	"net/http"
-	"time"
-	"google.golang.org/grpc"
 )
 
-// Server represents the gRPC server
+// Server represents the HTTP server
 type Server struct {
-	store     *store.Store
-	grpcServer *grpc.Server
+	store      *store.Store
 	httpServer *http.Server
 	port       string
 }
@@ -28,12 +24,7 @@ func NewServer(store *store.Store, port string) *Server {
 
 // Start starts the server
 func (s *Server) Start() error {
-	// Start gRPC server
-	if err := s.startGRPCServer(); err != nil {
-		return fmt.Errorf("failed to start gRPC server: %w", err)
-	}
-
-	// Start HTTP server for health checks
+	// Start HTTP server
 	if err := s.startHTTPServer(); err != nil {
 		return fmt.Errorf("failed to start HTTP server: %w", err)
 	}
@@ -41,40 +32,97 @@ func (s *Server) Start() error {
 	return nil
 }
 
-// startGRPCServer starts the gRPC server
-func (s *Server) startGRPCServer() error {
-	// Create gRPC server
-	s.grpcServer = grpc.NewServer()
-
-	// Register services
-	kvService := NewKVService(s.store)
-	RegisterKVServiceServer(s.grpcServer, kvService)
-
-	// Start listening
-	lis, err := net.Listen("tcp", ":"+s.port)
-	if err != nil {
-		return fmt.Errorf("failed to listen: %w", err)
-	}
-
-	// Start server in goroutine
-	go func() {
-		if err := s.grpcServer.Serve(lis); err != nil {
-			fmt.Printf("gRPC server error: %v\n", err)
-		}
-	}()
-
-	fmt.Printf("gRPC server started on port %s\n", s.port)
-	return nil
-}
-
-// startHTTPServer starts the HTTP server for health checks
-func (s *Server) startHTTPServer() error {
+// createHTTPHandler creates the HTTP handler for testing
+func (s *Server) createHTTPHandler() http.Handler {
 	mux := http.NewServeMux()
-	
+
 	// Health check endpoint
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("OK"))
+	})
+
+	// REST API endpoints
+	mux.HandleFunc("/api/put", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "POST" {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		// Parse form data
+		if err := r.ParseForm(); err != nil {
+			http.Error(w, "Failed to parse form", http.StatusBadRequest)
+			return
+		}
+
+		key := r.FormValue("key")
+		value := r.FormValue("value")
+
+		if key == "" || value == "" {
+			http.Error(w, "Missing key or value", http.StatusBadRequest)
+			return
+		}
+
+		err := s.store.PutString(key, value)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"status":"success"}`))
+	})
+
+	mux.HandleFunc("/api/get", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "GET" {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		key := r.URL.Query().Get("key")
+		if key == "" {
+			http.Error(w, "Missing key", http.StatusBadRequest)
+			return
+		}
+
+		value, found, err := s.store.GetString(key)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		if !found {
+			http.Error(w, "Key not found", http.StatusNotFound)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"value":"` + value + `"}`))
+	})
+
+	mux.HandleFunc("/api/delete", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "DELETE" {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		key := r.URL.Query().Get("key")
+		if key == "" {
+			http.Error(w, "Missing key", http.StatusBadRequest)
+			return
+		}
+
+		err := s.store.DeleteString(key)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"status":"success"}`))
 	})
 
 	// Metrics endpoint
@@ -82,6 +130,13 @@ func (s *Server) startHTTPServer() error {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("# LSMDB Metrics\n"))
 	})
+
+	return mux
+}
+
+// startHTTPServer starts the HTTP server for health checks
+func (s *Server) startHTTPServer() error {
+	mux := s.createHTTPHandler()
 
 	s.httpServer = &http.Server{
 		Addr:    ":8081",
@@ -101,34 +156,12 @@ func (s *Server) startHTTPServer() error {
 
 // Stop stops the server
 func (s *Server) Stop() error {
-	// Stop gRPC server
-	if s.grpcServer != nil {
-		s.grpcServer.GracefulStop()
-	}
-
 	// Stop HTTP server
 	if s.httpServer != nil {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if err := s.httpServer.Shutdown(ctx); err != nil {
+		if err := s.httpServer.Shutdown(context.TODO()); err != nil {
 			return fmt.Errorf("failed to shutdown HTTP server: %w", err)
 		}
 	}
 
 	return nil
-}
-
-// RegisterKVServiceServer registers the KV service with the gRPC server
-func RegisterKVServiceServer(s *grpc.Server, srv KVServiceServer) {
-	// This would be generated by protoc in a real implementation
-	// For now, we'll implement it manually
-}
-
-// KVServiceServer is the interface for the KV service
-type KVServiceServer interface {
-	Put(context.Context, *PutRequest) (*PutResponse, error)
-	Get(context.Context, *GetRequest) (*GetResponse, error)
-	Delete(context.Context, *DeleteRequest) (*DeleteResponse, error)
-	Batch(context.Context, *BatchRequest) (*BatchResponse, error)
-	Health(context.Context, *HealthRequest) (*HealthResponse, error)
 }

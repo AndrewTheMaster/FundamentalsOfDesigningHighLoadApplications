@@ -55,7 +55,7 @@ This document explains the LSM-Tree implementation in detail, including how data
 ## Data Flow
 
 ### Write Path
-1. **Write Request** → gRPC Service
+1. **Write Request** → REST API Service
 2. **WAL Logging** → Write to WAL file (durability)
 3. **Memtable Insert** → Add to sorted in-memory structure
 4. **Threshold Check** → If memtable full, trigger flush
@@ -64,7 +64,7 @@ This document explains the LSM-Tree implementation in detail, including how data
 7. **Compaction Check** → Trigger compaction if needed
 
 ### Read Path
-1. **Read Request** → gRPC Service
+1. **Read Request** → REST API Service
 2. **Memtable Search** → Check in-memory first
 3. **Level Search** → Search L0 → L1 → L2... (newest to oldest)
 4. **Bloom Filter** → Quick key existence check
@@ -104,7 +104,7 @@ This document explains the LSM-Tree implementation in detail, including how data
 - Memtable flushing
 - SSTable creation
 - Level management
-- gRPC service functionality
+- REST API service functionality
 
 ### Performance Tests
 **Manual Testing**:
@@ -225,7 +225,7 @@ docker exec lsmdb-test ls -la /data/
 - **Memtable + WAL**: Complete and functional
 - **SSTable Creation**: Files created successfully
 - **Level Management**: Basic structure works
-- **gRPC API**: Network interface working
+- **REST API**: HTTP network interface working
 - **Docker**: Containerization complete
 - **Basic Operations**: Put, Get, Delete work correctly
 - **Data Consistency**: Basic operations maintain consistency
@@ -258,7 +258,7 @@ This is a **solid LSM-tree implementation** that successfully demonstrates Lab 2
 
 **Lab 3 Achievements:**
 - Working Docker deployment
-- gRPC network API for remote access
+- REST HTTP API for remote access
 - HTTP health check endpoints
 - Containerized database ready for remote testing
 - Production-ready deployment structure
@@ -266,7 +266,7 @@ This is a **solid LSM-tree implementation** that successfully demonstrates Lab 2
 **Key Strengths:**
 - Complete LSM-tree architecture implementation
 - Working Docker containerization
-- gRPC network API
+- REST HTTP API
 - Comprehensive testing coverage
 - Good documentation and code structure
 

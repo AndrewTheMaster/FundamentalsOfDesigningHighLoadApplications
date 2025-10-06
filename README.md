@@ -7,7 +7,7 @@ This repository contains a learning-oriented LSM-Tree key-value database impleme
 ## Labs Scope
 - **Lab 1**: Public interfaces and internal component interfaces - **COMPLETED**
 - **Lab 2**: Local implementation of storage engine (memtable, persistence layer) - **COMPLETED**
-- **Lab 3**: RPC exposure (gRPC/REST) and hosting - **COMPLETED**
+- **Lab 3**: RPC exposure (REST API) and hosting - **COMPLETED**
 - **Lab 4**: Replication - **PENDING**
 - **Lab 5**: Sharding - **PENDING**
 
@@ -20,14 +20,14 @@ This repository contains a learning-oriented LSM-Tree key-value database impleme
 - **SSTables**: Multi-level storage with blocks, indexes, and bloom filters  
 - **Compaction**: Automatic level-based compaction strategy
 - **Manifest**: Metadata management for tables and levels
-- **gRPC Service**: Network API with health checks
+- **REST API**: HTTP network interface with health checks
 - **Docker**: Containerized deployment ready
 
 **Features Implemented:**
 - **Full LSM-tree**: Memtable → SSTables → Levels → Compaction
 - **Durability**: WAL (Write-Ahead Log) for crash recovery
 - **Performance**: Bloom filters, block cache, binary search
-- **Network API**: gRPC server with health endpoints
+- **Network API**: REST HTTP server with health endpoints
 - **Containerization**: Docker with multi-stage build
 - **Testing**: Comprehensive test coverage
 - **Production Ready**: Error handling, logging, graceful shutdown
@@ -38,7 +38,7 @@ This repository contains a learning-oriented LSM-Tree key-value database impleme
 - **Memtable + WAL**: Complete and functional
 - **SSTable Creation**: Files created successfully  
 - **Level Management**: Basic structure works
-- **gRPC API**: Network interface working
+- **REST API**: HTTP network interface working
 - **Docker**: Containerization complete
 - **Testing**: Core tests passing
 - **Basic Operations**: Put, Get, Delete work correctly
@@ -91,10 +91,15 @@ go run cmd/main.go
 ```bash
 # Build and run Docker container
 docker build -t lsmdb .
-docker run --rm -p 8080:8080 -p 8081:8081 lsmdb
+docker run --rm -p 8081:8081 lsmdb
 
 # Test remote connection
 curl http://localhost:8081/health
+
+# Test REST API
+curl -X POST -d "key=test&value=data" http://localhost:8081/api/put
+curl "http://localhost:8081/api/get?key=test"
+curl -X DELETE "http://localhost:8081/api/delete?key=test"
 ```
 
 **Test Results:**
@@ -133,7 +138,7 @@ curl http://localhost:8081/health
 - Data persistence
 
 **Available endpoints:**
-- `gRPC`: `localhost:8080` (Put, Get, Delete, Batch operations)
+- `REST API`: `localhost:8081/api/` (PUT, GET, DELETE operations)
 - `HTTP Health`: `localhost:8081/health`
 - `HTTP Metrics`: `localhost:8081/metrics`
 
