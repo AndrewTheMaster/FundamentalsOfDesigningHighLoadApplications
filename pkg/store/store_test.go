@@ -18,13 +18,13 @@ func TestStore_PutString_GetString(t *testing.T) {
 	// Create store
 	timeProvider := &mockTimeProvider{now: time.Now()}
 	store := New("/tmp/test", timeProvider)
-	
+
 	// Test PutString
 	err := store.PutString("key1", "value1")
 	if err != nil {
 		t.Fatalf("PutString failed: %v", err)
 	}
-	
+
 	// Test GetString
 	value, found, err := store.GetString("key1")
 	if err != nil {
@@ -42,13 +42,13 @@ func TestStore_DeleteString(t *testing.T) {
 	// Create store
 	timeProvider := &mockTimeProvider{now: time.Now()}
 	store := New("/tmp/test", timeProvider)
-	
+
 	// Put a value
 	err := store.PutString("key1", "value1")
 	if err != nil {
 		t.Fatalf("PutString failed: %v", err)
 	}
-	
+
 	// Verify it exists
 	value, found, err := store.GetString("key1")
 	if err != nil {
@@ -57,13 +57,13 @@ func TestStore_DeleteString(t *testing.T) {
 	if !found || value != "value1" {
 		t.Fatal("Expected to find key1 with value1")
 	}
-	
+
 	// Delete it
-	err = store.DeleteString("key1")
+	err = store.Delete("key1")
 	if err != nil {
-		t.Fatalf("DeleteString failed: %v", err)
+		t.Fatalf("Delete failed: %v", err)
 	}
-	
+
 	// Verify it's deleted
 	value, found, err = store.GetString("key1")
 	if err != nil {
@@ -78,19 +78,19 @@ func TestStore_Overwrite(t *testing.T) {
 	// Create store
 	timeProvider := &mockTimeProvider{now: time.Now()}
 	store := New("/tmp/test", timeProvider)
-	
+
 	// Put initial value
 	err := store.PutString("key1", "value1")
 	if err != nil {
 		t.Fatalf("PutString failed: %v", err)
 	}
-	
+
 	// Overwrite with new value
 	err = store.PutString("key1", "value2")
 	if err != nil {
 		t.Fatalf("PutString overwrite failed: %v", err)
 	}
-	
+
 	// Verify new value
 	value, found, err := store.GetString("key1")
 	if err != nil {
@@ -108,18 +108,18 @@ func TestStore_MultipleKeys(t *testing.T) {
 	// Create store
 	timeProvider := &mockTimeProvider{now: time.Now()}
 	store := New("/tmp/test", timeProvider)
-	
+
 	// Put multiple keys
 	keys := []string{"key1", "key2", "key3"}
 	values := []string{"value1", "value2", "value3"}
-	
+
 	for i, key := range keys {
 		err := store.PutString(key, values[i])
 		if err != nil {
 			t.Fatalf("PutString failed for %s: %v", key, err)
 		}
 	}
-	
+
 	// Verify all keys
 	for i, key := range keys {
 		value, found, err := store.GetString(key)
@@ -139,8 +139,8 @@ func TestStore_NonExistentKey(t *testing.T) {
 	// Create store
 	timeProvider := &mockTimeProvider{now: time.Now()}
 	store := New("/tmp/test", timeProvider)
-	
-	// Try to get non-existent key
+
+	// Try to Get non-existent key
 	_, found, err := store.GetString("nonexistent")
 	if err != nil {
 		t.Fatalf("GetString failed: %v", err)

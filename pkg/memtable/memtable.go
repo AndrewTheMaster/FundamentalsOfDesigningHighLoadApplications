@@ -1,210 +1,136 @@
 package memtable
 
 import (
+	"bytes"
 	"errors"
-	"fmt"
 	"sync"
+	"sync/atomic"
+
+	"github.com/zhangyunhao116/skipmap"
 )
-
-// Operation types
-type operation uint8
-
-const (
-	putOp    operation = 1
-	deleteOp operation = 2
-)
-
-// Value types
-type valType uint8
-
-const (
-	vTypeString valType = 1
-	vTypeInt    valType = 2
-	vTypeFloat  valType = 3
-)
-
-// encodeMetadata encodes operation and value type into metadata
-func encodeMetadata(op operation, valType valType) uint64 {
-	return uint64(op) | (uint64(valType) << 8)
-}
 
 var (
 	ErrMemTableOverload = errors.New("memtable is overloaded")
+	ErrTooLargeEntry    = errors.New("entry is too large")
 )
 
-type iSortedSet interface {
-	Sorted() []*Item
-	Has(item *Item) bool
-	InsertOrReplace(item *Item) *Item
-	Get(key []byte) *Item
-	Len() int
-	Iterator() func(item *Item) bool
-	Clear()
-}
+type concurrentSet = skipmap.FuncMap[[]byte, Item]
 
 type Memtable struct {
-	mu        sync.RWMutex
-	threshold int
-	size      int
-	ss        iSortedSet
-	wal       *WAL
-	seqNum    uint64
+	threshold uint64
+	ver       atomic.Uint64
+	size      atomic.Uint64
+
+	underlying atomic.Pointer[concurrentSet]
+	// old immutable tables
+	// the only data origin when rotation is applied
+	imm atomic.Pointer[[]*concurrentSet]
+
+	flushChan chan SortedSet
+	mu        sync.Mutex
+	cond      *sync.Cond
 }
 
-func New(threshold int, sortedSet iSortedSet, wal *WAL) *Memtable {
-	return &Memtable{
-		threshold: threshold,
-		ss:        sortedSet,
-		size:      0,
-		wal:       wal,
-		seqNum:    1,
+func New(threshold uint) *Memtable {
+	mt := Memtable{
+		threshold: uint64(threshold),
+		flushChan: make(chan SortedSet, 2),
 	}
+	mt.underlying.Store(
+		skipmap.NewFunc[[]byte, Item](func(a, b []byte) bool {
+			return bytes.Compare(a, b) < 0
+		}),
+	)
+	mt.cond = sync.NewCond(&mt.mu)
+	return &mt
 }
 
-func (mt *Memtable) Snapshot() []*Item {
-	mt.mu.RLock()
-	defer mt.mu.RUnlock()
-	return mt.ss.Sorted()
-}
-
-func (mt *Memtable) Upsert(key, value []byte, seqN, meta uint64) (bool, error) {
-	mt.mu.Lock()
-	defer mt.mu.Unlock()
-
-	// Write to WAL first
-	if mt.wal != nil {
-		walEntry := WALEntry{
-			SeqNum:    seqN,
-			Key:       key,
-			Value:     value,
-			Tombstone: false,
-		}
-		if err := mt.wal.Append(walEntry, true); err != nil {
-			return false, fmt.Errorf("failed to write to WAL: %w", err)
-		}
+func (mt *Memtable) Get(k []byte) (Item, bool) {
+	active := mt.underlying.Load()
+	it, ok := active.Load(k)
+	if ok {
+		return it, true
 	}
 
-	// Update memtable
-	found := mt.ss.InsertOrReplace(&Item{
-		Key:   key,
+	immutable := mt.imm.Load()
+	if immutable == nil {
+		return Item{}, false
+	}
+
+	for _, ordMap := range *immutable {
+		it, ok = ordMap.Load(k)
+		if ok {
+			return it, true
+		}
+	}
+
+	return Item{}, false
+}
+
+func (mt *Memtable) Upsert(k, value []byte, seqN, meta uint64) error {
+	const (
+		mdSize   = 8
+		seqNSize = 8
+	)
+	entSize := uint64(len(k)) + uint64(len(value)) + seqNSize + mdSize
+	if entSize > mt.threshold {
+		return ErrTooLargeEntry
+	}
+
+	for {
+		currentSize := mt.size.Load()
+		newSize := currentSize + entSize
+
+		if newSize < mt.threshold {
+			if mt.size.CompareAndSwap(currentSize, newSize) {
+				break
+			}
+			continue
+		}
+
+		ver := mt.ver.Load()
+		mt.mu.Lock()
+		acquired := mt.ver.CompareAndSwap(ver, ver+1)
+		if acquired {
+			mt.rotate(entSize)
+			mt.cond.Broadcast()
+			mt.mu.Unlock()
+			break
+		} else {
+			mt.cond.Wait()
+			mt.mu.Unlock()
+		}
+
+	}
+
+	active := mt.underlying.Load()
+	active.Store(k, Item{
+		Key:   k,
 		Value: value,
 		SeqN:  seqN,
 		Meta:  meta,
 	})
 
-	mt.size += len(key) + len(value) + 8 // 8 = sizeof(seqNumber) + sizeof(meta)
-	if mt.size >= mt.threshold {
-		return false, ErrMemTableOverload
-	}
-
-	return found != nil, nil
-}
-
-func (mt *Memtable) Get(key []byte) *Item {
-	mt.mu.RLock()
-	defer mt.mu.RUnlock()
-	return mt.ss.Get(key)
-}
-
-func (mt *Memtable) Delete(key []byte, seqN uint64) error {
-	mt.mu.Lock()
-	defer mt.mu.Unlock()
-
-	// Write delete to WAL
-	if mt.wal != nil {
-		walEntry := WALEntry{
-			SeqNum:    seqN,
-			Key:       key,
-			Value:     nil,
-			Tombstone: true,
-		}
-		if err := mt.wal.Append(walEntry, true); err != nil {
-			return fmt.Errorf("failed to write delete to WAL: %w", err)
-		}
-	}
-
-	// Insert tombstone
-	mt.ss.InsertOrReplace(&Item{
-		Key:   key,
-		Value: nil,
-		SeqN:  seqN,
-		Meta:  encodeMetadata(deleteOp, vTypeString),
-	})
-
-	mt.size += len(key) + 8
-	if mt.size >= mt.threshold {
-		return ErrMemTableOverload
-	}
-
 	return nil
 }
 
-func (mt *Memtable) Flush() error {
-	mt.mu.Lock()
-	defer mt.mu.Unlock()
+func (mt *Memtable) rotate(initSize uint64) {
+	current := mt.underlying.Load()
+	mt.flushChan <- &sortedSet{current}
 
-	// Clear memtable
-	mt.ss.Clear()
-	mt.size = 0
+	oldSlice := mt.imm.Load()
+	newSlice := append([]*concurrentSet{}, *oldSlice...)
+	newSlice = append(newSlice, current)
+	mt.imm.Store(&newSlice)
 
-	// Close and recreate WAL
-	if mt.wal != nil {
-		if err := mt.wal.Close(); err != nil {
-			return fmt.Errorf("failed to close WAL: %w", err)
-		}
-	}
-
-	return nil
+	mt.underlying.Store(
+		skipmap.NewFunc[[]byte, Item](func(a, b []byte) bool {
+			return bytes.Compare(a, b) < 0
+		}),
+	)
+	mt.size.Store(initSize)
 }
 
-func (mt *Memtable) ReplayFromWAL() error {
-	if mt.wal == nil {
-		return nil
-	}
-
-	return mt.wal.Replay(func(entry WALEntry) error {
-		// Update sequence number
-		if entry.SeqNum > mt.seqNum {
-			mt.seqNum = entry.SeqNum
-		}
-
-		if entry.Tombstone {
-			// Handle delete - encode delete operation with string type
-			mt.ss.InsertOrReplace(&Item{
-				Key:   entry.Key,
-				Value: nil,
-				SeqN:  entry.SeqNum,
-				Meta:  encodeMetadata(deleteOp, vTypeString),
-			})
-			mt.size += len(entry.Key) + 8
-		} else {
-			// Handle put - encode put operation with string type
-			mt.ss.InsertOrReplace(&Item{
-				Key:   entry.Key,
-				Value: entry.Value,
-				SeqN:  entry.SeqNum,
-				Meta:  encodeMetadata(putOp, vTypeString),
-			})
-			mt.size += len(entry.Key) + len(entry.Value) + 8
-		}
-		return nil
-	})
-}
-
-func (mt *Memtable) GetNextSeqNum() uint64 {
-	mt.mu.Lock()
-	defer mt.mu.Unlock()
-	mt.seqNum++
-	return mt.seqNum
-}
-
-func (mt *Memtable) ApproximateSize() int {
-	mt.mu.RLock()
-	defer mt.mu.RUnlock()
-	return mt.size
-}
-
-func Replace(ss iSortedSet) {
-	// TODO: must atomically return snapshot + replace underlying container
-	// TODO: by using atomic.Pointer for iSortedSet
+func (mt *Memtable) FlushChan() <-chan SortedSet {
+	return mt.flushChan
 }

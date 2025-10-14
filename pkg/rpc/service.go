@@ -38,9 +38,9 @@ type GetRequest struct {
 
 // GetResponse represents a get response
 type GetResponse struct {
-	Value  string
-	Found  bool
-	Error  string
+	Value string
+	Found bool
+	Error string
 }
 
 // DeleteRequest represents a delete request
@@ -104,7 +104,7 @@ func (s *KVService) Get(ctx context.Context, req *GetRequest) (*GetResponse, err
 
 // Delete removes a key
 func (s *KVService) Delete(ctx context.Context, req *DeleteRequest) (*DeleteResponse, error) {
-	if err := s.store.DeleteString(req.Key); err != nil {
+	if err := s.store.Delete(req.Key); err != nil {
 		return &DeleteResponse{
 			Success: false,
 			Error:   err.Error(),
@@ -129,7 +129,7 @@ func (s *KVService) Batch(ctx context.Context, req *BatchRequest) (*BatchRespons
 				}, nil
 			}
 		case "delete":
-			if err := s.store.DeleteString(op.Key); err != nil {
+			if err := s.store.Delete(op.Key); err != nil {
 				return &BatchResponse{
 					Success: false,
 					Error:   fmt.Sprintf("failed to delete %s: %v", op.Key, err),

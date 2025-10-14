@@ -32,7 +32,7 @@ func main() {
 
 	// Create gRPC server
 	server := rpc.NewServer(db, "8080")
-	
+
 	// Start server
 	if err := server.Start(); err != nil {
 		fmt.Printf("Failed to start server: %v\n", err)
@@ -41,16 +41,16 @@ func main() {
 
 	// Demo operations
 	fmt.Println("Testing basic operations...")
-	
+
 	// Put some data
 	if err := db.PutString("user:1", "Alice"); err != nil {
 		fmt.Printf("Error putting user:1: %v\n", err)
 	}
-	
+
 	if err := db.PutString("user:2", "Bob"); err != nil {
 		fmt.Printf("Error putting user:2: %v\n", err)
 	}
-	
+
 	if err := db.PutString("config:timeout", "30s"); err != nil {
 		fmt.Printf("Error putting config:timeout: %v\n", err)
 	}
@@ -81,7 +81,7 @@ func main() {
 	}
 
 	// Delete data
-	if err := db.DeleteString("user:2"); err != nil {
+	if err := db.Delete("user:2"); err != nil {
 		fmt.Printf("Error deleting user:2: %v\n", err)
 	}
 

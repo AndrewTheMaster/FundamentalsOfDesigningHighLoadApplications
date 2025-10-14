@@ -12,11 +12,11 @@ import (
 func TestLSMTreeFlow(t *testing.T) {
 	// Create temporary directory
 	tempDir := t.TempDir()
-	
+
 	// Create store
 	timeProvider := &mockTimeProvider{now: time.Now()}
 	store := New(tempDir, timeProvider)
-	
+
 	// Test data flow
 	t.Run("MemtableOperations", func(t *testing.T) {
 		// Put data that should stay in memtable
@@ -28,7 +28,7 @@ func TestLSMTreeFlow(t *testing.T) {
 				t.Fatalf("PutString failed: %v", err)
 			}
 		}
-		
+
 		// Verify data is in memtable
 		for i := 0; i < 5; i++ {
 			key := fmt.Sprintf("key%d", i)
@@ -45,13 +45,13 @@ func TestLSMTreeFlow(t *testing.T) {
 			}
 		}
 	})
-	
+
 	t.Run("MemtableFlush", func(t *testing.T) {
 		// Force memtable flush by exceeding threshold
 		// This is a simplified test - in real implementation,
 		// we would need to add enough data to exceed threshold
 		fmt.Println("Testing memtable flush...")
-		
+
 		// Add more data to potentially trigger flush
 		for i := 5; i < 10; i++ {
 			key := fmt.Sprintf("key%d", i)
@@ -62,7 +62,7 @@ func TestLSMTreeFlow(t *testing.T) {
 			}
 		}
 	})
-	
+
 	t.Run("DataPersistence", func(t *testing.T) {
 		// Verify all data is still accessible
 		for i := 0; i < 10; i++ {
@@ -80,14 +80,14 @@ func TestLSMTreeFlow(t *testing.T) {
 			}
 		}
 	})
-	
+
 	t.Run("UpdateOperations", func(t *testing.T) {
 		// Test key updates
 		err := store.PutString("key0", "updated_value0")
 		if err != nil {
 			t.Fatalf("Update failed: %v", err)
 		}
-		
+
 		value, found, err := store.GetString("key0")
 		if err != nil {
 			t.Fatalf("GetString failed: %v", err)
@@ -99,14 +99,14 @@ func TestLSMTreeFlow(t *testing.T) {
 			t.Fatalf("Expected updated_value0, got %s", value)
 		}
 	})
-	
+
 	t.Run("DeleteOperations", func(t *testing.T) {
 		// Test key deletion
-		err := store.DeleteString("key1")
+		err := store.Delete("key1")
 		if err != nil {
 			t.Fatalf("Delete failed: %v", err)
 		}
-		
+
 		_, found, err := store.GetString("key1")
 		if err != nil {
 			t.Fatalf("GetString failed: %v", err)
@@ -120,23 +120,23 @@ func TestLSMTreeFlow(t *testing.T) {
 // TestWALFunctionality tests Write-Ahead Log functionality
 func TestWALFunctionality(t *testing.T) {
 	tempDir := t.TempDir()
-	
+
 	// Create store
 	timeProvider := &mockTimeProvider{now: time.Now()}
 	store := New(tempDir, timeProvider)
-	
+
 	// Add some data
 	err := store.PutString("wal_test_key", "wal_test_value")
 	if err != nil {
 		t.Fatalf("PutString failed: %v", err)
 	}
-	
+
 	// Check if WAL file exists
 	walPath := filepath.Join(tempDir, "wal.log")
 	if _, err := os.Stat(walPath); os.IsNotExist(err) {
 		t.Fatal("WAL file should exist")
 	}
-	
+
 	// Verify data is still accessible
 	value, found, err := store.GetString("wal_test_key")
 	if err != nil {
@@ -153,11 +153,11 @@ func TestWALFunctionality(t *testing.T) {
 // TestSSTableCreation tests SSTable creation and management
 func TestSSTableCreation(t *testing.T) {
 	tempDir := t.TempDir()
-	
+
 	// Create store
 	timeProvider := &mockTimeProvider{now: time.Now()}
 	store := New(tempDir, timeProvider)
-	
+
 	// Add data to potentially trigger SSTable creation
 	for i := 0; i < 20; i++ {
 		key := fmt.Sprintf("sstable_key%d", i)
@@ -167,13 +167,13 @@ func TestSSTableCreation(t *testing.T) {
 			t.Fatalf("PutString failed: %v", err)
 		}
 	}
-	
+
 	// Check if data directory has files
 	files, err := os.ReadDir(tempDir)
 	if err != nil {
 		t.Fatalf("Failed to read data directory: %v", err)
 	}
-	
+
 	// Should have at least WAL file
 	hasWAL := false
 	for _, file := range files {
@@ -182,11 +182,11 @@ func TestSSTableCreation(t *testing.T) {
 			break
 		}
 	}
-	
+
 	if !hasWAL {
 		t.Fatal("WAL file should exist")
 	}
-	
+
 	// Verify all data is accessible
 	for i := 0; i < 20; i++ {
 		key := fmt.Sprintf("sstable_key%d", i)
@@ -207,14 +207,14 @@ func TestSSTableCreation(t *testing.T) {
 // TestCompactionBehavior tests compaction behavior
 func TestCompactionBehavior(t *testing.T) {
 	tempDir := t.TempDir()
-	
+
 	// Create store
 	timeProvider := &mockTimeProvider{now: time.Now()}
 	store := New(tempDir, timeProvider)
-	
+
 	// Add data in smaller batches to avoid SSTable issues
 	batches := []int{5, 10, 15}
-	
+
 	for batchNum, batchSize := range batches {
 		for i := 0; i < batchSize; i++ {
 			key := fmt.Sprintf("batch%d_key%d", batchNum, i)
@@ -226,7 +226,7 @@ func TestCompactionBehavior(t *testing.T) {
 				continue
 			}
 		}
-		
+
 		// Verify batch data (skip if SSTable errors)
 		for i := 0; i < batchSize; i++ {
 			key := fmt.Sprintf("batch%d_key%d", batchNum, i)
@@ -245,13 +245,13 @@ func TestCompactionBehavior(t *testing.T) {
 			}
 		}
 	}
-	
+
 	// Check data directory structure
 	files, err := os.ReadDir(tempDir)
 	if err != nil {
 		t.Fatalf("Failed to read data directory: %v", err)
 	}
-	
+
 	fmt.Printf("Data directory contains %d files:\n", len(files))
 	for _, file := range files {
 		fmt.Printf("  %s\n", file.Name())
@@ -261,14 +261,14 @@ func TestCompactionBehavior(t *testing.T) {
 // TestConcurrentOperations tests concurrent read/write operations
 func TestConcurrentOperations(t *testing.T) {
 	tempDir := t.TempDir()
-	
+
 	// Create store
 	timeProvider := &mockTimeProvider{now: time.Now()}
 	store := New(tempDir, timeProvider)
-	
+
 	// Concurrent writes (reduced to avoid SSTable issues)
 	done := make(chan bool, 5)
-	
+
 	for i := 0; i < 5; i++ {
 		go func(id int) {
 			for j := 0; j < 5; j++ {
@@ -284,12 +284,12 @@ func TestConcurrentOperations(t *testing.T) {
 			done <- true
 		}(i)
 	}
-	
+
 	// Wait for all goroutines to complete
 	for i := 0; i < 5; i++ {
 		<-done
 	}
-	
+
 	// Verify all data is accessible (skip if SSTable errors)
 	for i := 0; i < 5; i++ {
 		for j := 0; j < 5; j++ {

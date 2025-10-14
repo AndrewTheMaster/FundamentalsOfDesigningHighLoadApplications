@@ -3,6 +3,7 @@ package persistance
 import (
 	"encoding/json"
 	"fmt"
+	"lsmdb/pkg/types"
 	"os"
 	"path/filepath"
 	"sync"
@@ -17,9 +18,10 @@ type Manifest struct {
 
 // ManifestData represents the manifest data
 type ManifestData struct {
-	NextTableID uint64              `json:"next_table_id"`
-	Levels      map[int][]TableInfo `json:"levels"`
-	Version     int                 `json:"version"`
+	NextTableID  uint64              `json:"next_table_id"`
+	Levels       map[int][]TableInfo `json:"levels"`
+	Version      int                 `json:"version"`
+	PersistentID types.SeqN          `json:"persistent_id"`
 }
 
 // TableInfo represents information about an SSTable
@@ -276,4 +278,8 @@ func (m *Manifest) GetLevelSize(level int) int64 {
 	}
 
 	return totalSize
+}
+
+func (m *Manifest) PersistentID() types.SeqN {
+	return m.metadata.PersistentID
 }

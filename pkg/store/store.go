@@ -1,36 +1,53 @@
 package store
 
 import (
+	"context"
 	"fmt"
+	"lsmdb/pkg/clock"
 	"lsmdb/pkg/memtable"
 	"lsmdb/pkg/persistance"
+	"lsmdb/pkg/types"
+	"lsmdb/pkg/wal"
 	"sync"
 	"time"
 )
+
+type iJournal interface {
+	Append(e wal.Entry)
+	Done() <-chan uint64
+	Replay(start uint64, callback func(wal.Entry) error) error
+}
 
 type iTimeProvider interface {
 	Now() time.Time
 }
 
-type Store struct {
-	mu           sync.RWMutex
-	mt           *memtable.Memtable
-	tp           iTimeProvider
-	levelManager *persistance.LevelManager
-	manifest     *persistance.Manifest
-	seqNum       uint64
-	dataDir      string
+type iClock interface {
+	Val() types.SeqN
+	Next() types.SeqN
+	Set(t types.SeqN)
 }
 
-func New(dataDir string, tp iTimeProvider) *Store {
-	// Create WAL
-	wal, _ := memtable.NewWAL(dataDir)
+type Store struct {
+	mu      sync.RWMutex
+	tp      iTimeProvider
+	jr      iJournal
+	seqN    iClock
+	dataDir string
 
-	// Create sorted set
-	sortedSet := memtable.NewSortedSet()
+	levelManager *persistance.LevelManager
+	mt           *memtable.Memtable
+}
+
+func New(dataDir string, tp iTimeProvider) (*Store, error) {
+	// Create WAL
+	journal, err := wal.New(dataDir)
+	if err != nil {
+		return nil, err
+	}
 
 	// Create memtable
-	memtable := memtable.New(1000, sortedSet, wal) // 1000 byte threshold
+	mt := memtable.New(1024)
 
 	// Create level manager
 	levelManager := persistance.NewLevelManager(dataDir)
@@ -38,210 +55,135 @@ func New(dataDir string, tp iTimeProvider) *Store {
 	// Create manifest
 	manifest := persistance.NewManifest(dataDir)
 
-	store := &Store{
-		mt:           memtable,
-		tp:           tp,
-		levelManager: levelManager,
-		manifest:     manifest,
-		seqNum:       1,
-		dataDir:      dataDir,
-	}
-
-	// Load manifest
 	if err := manifest.Load(); err != nil {
-		// If manifest doesn't exist, that's OK for new database
-		fmt.Printf("Warning: Could not load manifest: %v\n", err)
+		return nil, err
 	}
 
-	// Replay WAL to restore memtable state
-	if err := memtable.ReplayFromWAL(); err != nil {
-		// If WAL doesn't exist, that's OK for new database
-		fmt.Printf("Warning: Could not replay WAL: %v\n", err)
+	store := &Store{
+		mt:           mt,
+		tp:           tp,
+		jr:           journal,
+		levelManager: levelManager,
+		seqN: clock.NewAtomic(
+			manifest.PersistentID() + 1,
+		),
+		dataDir: dataDir,
 	}
 
-	return store
+	if err := store.restoreFromJournal(); err != nil {
+		return nil, err
+	}
+
+	// Start background goroutine to flush memtable in background
+	go func() {
+		flusher := NewFlusher(mt.FlushChan(), dataDir, levelManager, manifest)
+		if err = flusher.Start(context.Background()); err != nil {
+			panic("flusher error: " + err.Error())
+		}
+	}()
+
+	return store, nil
+}
+
+func (s *Store) restoreFromJournal() error {
+	if s.jr == nil {
+		return ErrWALNotInitialized
+	}
+
+	// Replay from the last known persistent entry seq number
+	return s.jr.Replay(s.seqN.Val(), func(entry wal.Entry) error {
+		// Actualize seqN if needed
+		if entry.SeqNum > s.seqN.Val() {
+			s.seqN.Set(entry.SeqNum)
+		}
+
+		return s.mt.Upsert(entry.Key, entry.Value, entry.SeqNum, entry.Meta)
+	})
+}
+
+func (s *Store) Put(key string, value any) error {
+	switch value.(type) {
+	case string:
+		return s.PutString(key, value.(string))
+	default:
+		return ErrValueTypeNotSupported
+	}
 }
 
 func (s *Store) PutString(key string, value string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	// Encode operation and value type into metadata
-	meta := encodeMetadata(insertOp, vTypeString)
-
-	// Convert to bytes
-	keyBytes := []byte(key)
-	valueBytes := []byte(value)
-
-	// Try to upsert into memtable
-	_, err := s.mt.Upsert(keyBytes, valueBytes, s.seqNum, meta)
-	if err != nil {
-		if err == memtable.ErrMemTableOverload {
-			// Flush memtable to SSTable
-			if err := s.flushMemtable(); err != nil {
-				return fmt.Errorf("failed to flush memtable: %w", err)
-			}
-
-			// Retry the operation
-			_, err = s.mt.Upsert(keyBytes, valueBytes, s.seqNum, meta)
-			if err != nil {
-				return fmt.Errorf("failed to upsert after flush: %w", err)
-			}
-		} else {
-			return fmt.Errorf("failed to upsert: %w", err)
-		}
-	}
-
-	s.seqNum++
-	return nil
+	return s.put(key, String(value), insertOp)
 }
 
-func (s *Store) GetString(key string) (string, bool, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+func (s *Store) put(key string, val value, op operation) error {
+	entryID := s.seqN.Next()
+	md := newMD(op, val.typeOf())
 
+	s.jr.Append(wal.Entry{
+		SeqNum: entryID,
+		Key:    []byte(key),
+		Value:  val.bin(),
+	})
+	// wait for the WAL to confirm write
+	for id := <-s.jr.Done(); id != entryID; {
+		id = <-s.jr.Done()
+	}
+
+	return s.mt.Upsert(
+		[]byte(key),
+		val.bin(),
+		entryID,
+		uint64(md),
+	)
+}
+
+func (s *Store) Get(key string) (storable, bool, error) {
 	keyBytes := []byte(key)
 
-	// First check memtable
-	item := s.mt.Get(keyBytes)
-	if item != nil {
-		// Decode metadata
-		op, valType, _ := decodeMetadata(item.Meta)
-		if op == deleteOp {
-			return "", false, nil // Deleted
+	// first check memtable
+	item, ok := s.mt.Get(keyBytes)
+	if ok {
+		md := MD(item.Meta)
+		if md.operation() == deleteOp {
+			return nil, false, nil // deleted
 		}
 
-		if valType == vTypeString {
-			// Check if this is a tombstone (empty value)
-			if len(item.Value) == 0 {
-				return "", false, nil // Deleted
-			}
-			return string(item.Value), true, nil
-		}
-
-		return "", false, fmt.Errorf("value is not a string")
+		storableItem, err := fromMemtableItem(item)
+		return storableItem, true, err
 	}
 
 	// Search in LSM-tree levels
 	sstableItem, err := s.levelManager.Get(keyBytes)
 	if err != nil {
-		return "", false, fmt.Errorf("failed to get from LSM-tree: %w", err)
+		return nil, false, fmt.Errorf("failed to Get from LSM-tree: %w", err)
 	}
 
 	if sstableItem == nil {
-		return "", false, nil
+		return nil, false, nil
 	}
 
-	// Decode metadata from LSM-tree
-	op, valType, _ := decodeMetadata(sstableItem.Meta)
-	if op == deleteOp {
-		return "", false, nil // Deleted
+	md := MD(sstableItem.Meta)
+	if md.operation() == deleteOp {
+		return nil, false, nil // deleted
 	}
 
-	if valType == vTypeString {
-		return string(sstableItem.Value), true, nil
-	}
-
-	return "", false, fmt.Errorf("value is not a string")
+	storableItem, err := fromSStableItem(*sstableItem)
+	return storableItem, true, err
 }
 
-func (s *Store) DeleteString(key string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	keyBytes := []byte(key)
-
-	// Use memtable delete method
-	err := s.mt.Delete(keyBytes, s.seqNum)
-	if err != nil {
-		if err == memtable.ErrMemTableOverload {
-			// Flush memtable first
-			if err := s.flushMemtable(); err != nil {
-				return fmt.Errorf("failed to flush memtable: %w", err)
-			}
-
-			// Retry delete
-			err = s.mt.Delete(keyBytes, s.seqNum)
-			if err != nil {
-				return fmt.Errorf("failed to delete after flush: %w", err)
-			}
-		} else {
-			return fmt.Errorf("failed to delete: %w", err)
-		}
+func (s *Store) GetString(key string) (string, bool, error) {
+	item, has, err := s.Get(key)
+	if err != nil || !has {
+		return "", has, err
 	}
 
-	s.seqNum++
-	return nil
+	strItem, ok := item.(String)
+	if !ok {
+		return "", false, ErrValueTypeMismatch
+	}
+
+	return string(strItem), true, nil
 }
 
-// flushMemtable saves memtable data to SSTable and clears it
-func (s *Store) flushMemtable() error {
-	// Get snapshot of memtable
-	snapshot := s.mt.Snapshot()
-
-	if len(snapshot) == 0 {
-		return nil
-	}
-
-	// Create SSTable from memtable data
-	tableID := s.manifest.GetNextTableID()
-	filePath := fmt.Sprintf("%s/L0_%d.sst", s.dataDir, tableID)
-
-	// Create bloom filter
-	bloom := persistance.NewBloomFilter(uint32(len(snapshot)), 0.01)
-
-	// Create cache
-	cache := persistance.NewBlockCache(100)
-
-	// Create SSTable
-	sstable := persistance.NewSSTable(filePath, bloom, cache)
-
-	// Convert memtable items to SSTable items
-	sstableItems := make([]persistance.SSTableItem, len(snapshot))
-	for i, item := range snapshot {
-		sstableItems[i] = persistance.SSTableItem{
-			Key:   item.Key,
-			Value: item.Value,
-			Meta:  item.Meta,
-		}
-	}
-
-	// Write data to SSTable
-	if err := s.levelManager.WriteSSTableData(sstable, sstableItems); err != nil {
-		return fmt.Errorf("failed to write SSTable data: %w", err)
-	}
-
-	// Open the table
-	if err := sstable.Open(); err != nil {
-		return fmt.Errorf("failed to open SSTable: %w", err)
-	}
-
-	// Add to level manager (L0)
-	if err := s.levelManager.AddSSTable(sstable, 0); err != nil {
-		return fmt.Errorf("failed to add SSTable to level manager: %w", err)
-	}
-
-	// Add to manifest
-	if err := s.manifest.AddTable(tableID, filePath, 0, sstable.ApproximateSize()); err != nil {
-		return fmt.Errorf("failed to add table to manifest: %w", err)
-	}
-
-	// Clear memtable
-	if err := s.mt.Flush(); err != nil {
-		return fmt.Errorf("failed to flush memtable: %w", err)
-	}
-
-	return nil
-}
-
-// encodeMetadata encodes operation and value type into metadata
-func encodeMetadata(op operation, valType valType) uint64 {
-	return uint64(op) | (uint64(valType) << 8)
-}
-
-// decodeMetadata decodes metadata into operation, value type, and data
-func decodeMetadata(meta uint64) (operation, valType, []byte) {
-	op := operation(meta & 0xFF)
-	valType := valType((meta >> 8) & 0xFF)
-	return op, valType, nil // Data is stored separately in Value field
+func (s *Store) Delete(key string) error {
+	return s.put(key, tombstone{}, deleteOp)
 }
