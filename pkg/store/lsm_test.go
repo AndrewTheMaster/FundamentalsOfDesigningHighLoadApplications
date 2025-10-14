@@ -15,8 +15,10 @@ func TestLSMTreeFlow(t *testing.T) {
 
 	// Create store
 	timeProvider := &mockTimeProvider{now: time.Now()}
-	store := New(tempDir, timeProvider)
-
+	store, err := New(tempDir, timeProvider)
+	if err != nil {
+		t.Fatalf("Failed to create store: %v", err)
+	}
 	// Test data flow
 	t.Run("MemtableOperations", func(t *testing.T) {
 		// Put data that should stay in memtable
@@ -123,10 +125,13 @@ func TestWALFunctionality(t *testing.T) {
 
 	// Create store
 	timeProvider := &mockTimeProvider{now: time.Now()}
-	store := New(tempDir, timeProvider)
+	store, err := New(tempDir, timeProvider)
+	if err != nil {
+		t.Fatalf("Failed to create store: %v", err)
+	}
 
 	// Add some data
-	err := store.PutString("wal_test_key", "wal_test_value")
+	err = store.PutString("wal_test_key", "wal_test_value")
 	if err != nil {
 		t.Fatalf("PutString failed: %v", err)
 	}
@@ -156,7 +161,10 @@ func TestSSTableCreation(t *testing.T) {
 
 	// Create store
 	timeProvider := &mockTimeProvider{now: time.Now()}
-	store := New(tempDir, timeProvider)
+	store, err := New(tempDir, timeProvider)
+	if err != nil {
+		t.Fatalf("Failed to create store: %v", err)
+	}
 
 	// Add data to potentially trigger SSTable creation
 	for i := 0; i < 20; i++ {
@@ -210,7 +218,10 @@ func TestCompactionBehavior(t *testing.T) {
 
 	// Create store
 	timeProvider := &mockTimeProvider{now: time.Now()}
-	store := New(tempDir, timeProvider)
+	store, err := New(tempDir, timeProvider)
+	if err != nil {
+		t.Fatalf("Failed to create store: %v", err)
+	}
 
 	// Add data in smaller batches to avoid SSTable issues
 	batches := []int{5, 10, 15}
@@ -264,7 +275,10 @@ func TestConcurrentOperations(t *testing.T) {
 
 	// Create store
 	timeProvider := &mockTimeProvider{now: time.Now()}
-	store := New(tempDir, timeProvider)
+	store, err := New(tempDir, timeProvider)
+	if err != nil {
+		t.Fatalf("Failed to create store: %v", err)
+	}
 
 	// Concurrent writes (reduced to avoid SSTable issues)
 	done := make(chan bool, 5)

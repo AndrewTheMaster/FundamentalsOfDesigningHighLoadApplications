@@ -17,10 +17,13 @@ func (m *mockTimeProvider) Now() time.Time {
 func TestStore_PutString_GetString(t *testing.T) {
 	// Create store
 	timeProvider := &mockTimeProvider{now: time.Now()}
-	store := New("/tmp/test", timeProvider)
+	store, err := New("/tmp/test", timeProvider)
+	if err != nil {
+		t.Fatalf("Failed to create store: %v", err)
+	}
 
 	// Test PutString
-	err := store.PutString("key1", "value1")
+	err = store.PutString("key1", "value1")
 	if err != nil {
 		t.Fatalf("PutString failed: %v", err)
 	}
@@ -41,10 +44,13 @@ func TestStore_PutString_GetString(t *testing.T) {
 func TestStore_DeleteString(t *testing.T) {
 	// Create store
 	timeProvider := &mockTimeProvider{now: time.Now()}
-	store := New("/tmp/test", timeProvider)
+	store, err := New("/tmp/test", timeProvider)
+	if err != nil {
+		t.Fatalf("Failed to create store: %v", err)
+	}
 
 	// Put a value
-	err := store.PutString("key1", "value1")
+	err = store.PutString("key1", "value1")
 	if err != nil {
 		t.Fatalf("PutString failed: %v", err)
 	}
@@ -77,10 +83,13 @@ func TestStore_DeleteString(t *testing.T) {
 func TestStore_Overwrite(t *testing.T) {
 	// Create store
 	timeProvider := &mockTimeProvider{now: time.Now()}
-	store := New("/tmp/test", timeProvider)
+	store, err := New("/tmp/test", timeProvider)
+	if err != nil {
+		t.Fatalf("Failed to create store: %v", err)
+	}
 
 	// Put initial value
-	err := store.PutString("key1", "value1")
+	err = store.PutString("key1", "value1")
 	if err != nil {
 		t.Fatalf("PutString failed: %v", err)
 	}
@@ -107,7 +116,10 @@ func TestStore_Overwrite(t *testing.T) {
 func TestStore_MultipleKeys(t *testing.T) {
 	// Create store
 	timeProvider := &mockTimeProvider{now: time.Now()}
-	store := New("/tmp/test", timeProvider)
+	store, err := New("/tmp/test", timeProvider)
+	if err != nil {
+		t.Fatalf("Failed to create store: %v", err)
+	}
 
 	// Put multiple keys
 	keys := []string{"key1", "key2", "key3"}
@@ -138,7 +150,10 @@ func TestStore_MultipleKeys(t *testing.T) {
 func TestStore_NonExistentKey(t *testing.T) {
 	// Create store
 	timeProvider := &mockTimeProvider{now: time.Now()}
-	store := New("/tmp/test", timeProvider)
+	store, err := New("/tmp/test", timeProvider)
+	if err != nil {
+		t.Fatalf("Failed to create store: %v", err)
+	}
 
 	// Try to Get non-existent key
 	_, found, err := store.GetString("nonexistent")
