@@ -4,15 +4,17 @@ import (
 	"context"
 	"fmt"
 	"lsmdb/pkg/clock"
+	"lsmdb/pkg/listener"
 	"lsmdb/pkg/memtable"
 	"lsmdb/pkg/persistance"
 	"lsmdb/pkg/types"
 	"lsmdb/pkg/wal"
-	"sync"
 	"time"
 )
 
 type iJournal interface {
+	listener.Job
+
 	Append(e wal.Entry)
 	Done() <-chan uint64
 	Replay(start uint64, callback func(wal.Entry) error) error
@@ -29,7 +31,6 @@ type iClock interface {
 }
 
 type Store struct {
-	mu      sync.RWMutex
 	tp      iTimeProvider
 	jr      iJournal
 	seqN    iClock
@@ -37,6 +38,8 @@ type Store struct {
 
 	levelManager *persistance.LevelManager
 	mt           *memtable.Memtable
+
+	close func()
 }
 
 func New(dataDir string, tp iTimeProvider) (*Store, error) {
@@ -65,7 +68,7 @@ func New(dataDir string, tp iTimeProvider) (*Store, error) {
 		jr:           journal,
 		levelManager: levelManager,
 		seqN: clock.NewAtomic(
-			manifest.PersistentID() + 1,
+			manifest.PersistentID(),
 		),
 		dataDir: dataDir,
 	}
@@ -74,13 +77,19 @@ func New(dataDir string, tp iTimeProvider) (*Store, error) {
 		return nil, err
 	}
 
-	// Start background goroutine to flush memtable in background
-	go func() {
-		flusher := NewFlusher(mt.FlushChan(), dataDir, levelManager, manifest)
-		if err = flusher.Start(context.Background()); err != nil {
-			panic("flusher error: " + err.Error())
-		}
-	}()
+	// start background goroutine to flush memtable in background
+	ctx := context.Background()
+	flusher := NewFlusher(mt.FlushChan(), dataDir, levelManager, manifest)
+	flusher.Start(ctx)
+
+	// start background goroutine to flush WAL async
+	store.jr.Start(ctx)
+
+	store.close = func() {
+		flusher.Stop()
+		store.jr.Stop()
+		store.mt.Close()
+	}
 
 	return store, nil
 }
@@ -91,7 +100,7 @@ func (s *Store) restoreFromJournal() error {
 	}
 
 	// Replay from the last known persistent entry seq number
-	return s.jr.Replay(s.seqN.Val(), func(entry wal.Entry) error {
+	return s.jr.Replay(s.seqN.Val()+1, func(entry wal.Entry) error {
 		// Actualize seqN if needed
 		if entry.SeqNum > s.seqN.Val() {
 			s.seqN.Set(entry.SeqNum)
@@ -122,6 +131,7 @@ func (s *Store) put(key string, val value, op operation) error {
 		SeqNum: entryID,
 		Key:    []byte(key),
 		Value:  val.bin(),
+		Meta:   uint64(md),
 	})
 	// wait for the WAL to confirm write
 	for id := <-s.jr.Done(); id != entryID; {
@@ -186,4 +196,8 @@ func (s *Store) GetString(key string) (string, bool, error) {
 
 func (s *Store) Delete(key string) error {
 	return s.put(key, tombstone{}, deleteOp)
+}
+
+func (s *Store) Close() {
+	s.close()
 }

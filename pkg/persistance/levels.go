@@ -259,13 +259,18 @@ func (lm *LevelManager) createCompactedTable(tables []*SSTable, targetLevel int)
 	return sstable, nil
 }
 
-// WriteSSTableData writes key-value pairs to an SSTable file (public method)
+// WriteSSTableData writes key-value pairs to an SSTable file
 func (lm *LevelManager) WriteSSTableData(sstable *SSTable, items []SSTableItem) error {
 	return lm.writeSSTableData(sstable, items)
 }
 
-// writeSSTableData writes key-value pairs to an SSTable file
 func (lm *LevelManager) writeSSTableData(sstable *SSTable, items []SSTableItem) error {
+	const (
+		sizeFieldSize = 4
+		seqNumSize    = 8
+		metaSize      = 8
+	)
+
 	file, err := os.Create(sstable.filePath)
 	if err != nil {
 		return fmt.Errorf("failed to create SSTable file: %w", err)
@@ -312,14 +317,15 @@ func (lm *LevelManager) writeSSTableData(sstable *SSTable, items []SSTableItem) 
 		}
 
 		// Add to block index
+		blockSz := sizeFieldSize + len(item.Key) + sizeFieldSize + len(item.Value) + seqNumSize + metaSize
 		blockIndex = append(blockIndex, IndexEntry{
 			Key:         item.Key,
 			BlockOffset: blockOffset,
-			BlockSize:   int(4 + len(item.Key) + 4 + len(item.Value) + 8 + 8), // keyLen + key + valueLen + value + seq + meta
+			BlockSize:   blockSz,
 			BlockInd:    blockNum,
 		})
 
-		blockOffset += int64(4 + len(item.Key) + 4 + len(item.Value) + 8 + 8)
+		blockOffset += int64(blockSz)
 		blockNum++
 	}
 

@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -15,12 +16,8 @@ import (
 type SSTableItem struct {
 	Key   []byte
 	Value []byte
+	ID    uint64
 	Meta  uint64
-}
-
-type iFileReader interface {
-	ReadBlockAt(offset int64, size int) ([]byte, error)
-	Close() error
 }
 
 type iCompressor interface {
@@ -109,68 +106,108 @@ func (s *SSTable) Close() error {
 }
 
 func (s *SSTable) LoadIndex() error {
+	const (
+		sizeFieldSize = 4
+		seqNumSize    = 8
+		metaSize      = 8
+	)
+
 	if s.reader == nil {
 		return fmt.Errorf("SSTable file not open")
 	}
 
-	// Reset to beginning
-	_, err := s.reader.Seek(0, 0)
+	// Получаем размер файла
+	fileInfo, err := s.reader.Stat()
+	if err != nil {
+		return fmt.Errorf("failed to stat file: %w", err)
+	}
+	fileSize := fileInfo.Size()
+	if fileSize < 4 {
+		return fmt.Errorf("file too small to contain index size")
+	}
+
+	// Read index size (4 bytes at the end of the file)
+	var (
+		indexSize uint32
+	)
+	_, err = s.reader.Seek(fileSize-sizeFieldSize, io.SeekStart)
+	if err != nil {
+		return fmt.Errorf("failed to seek to index size: %w", err)
+	}
+	err = binary.Read(s.reader, binary.LittleEndian, &indexSize)
+	if err != nil {
+		return fmt.Errorf("failed to read index size: %w", err)
+	}
+	// simple index size validation
+	if int64(indexSize) > fileSize-sizeFieldSize {
+		return fmt.Errorf("invalid index size")
+	}
+
+	// reset file pointer to the beginning
+	_, err = s.reader.Seek(0, io.SeekStart)
 	if err != nil {
 		return fmt.Errorf("failed to seek file: %w", err)
 	}
 
-	// Build index by scanning the file
-	s.blockIndex = []IndexEntry{}
-	offset := int64(0)
-	blockIndex := 0
+	// Read index entries until reaching indexOffsetR
+	var (
+		indexOffsetR = fileSize - sizeFieldSize - int64(indexSize)
+		reader       = bufio.NewReader(s.reader)
 
-	reader := bufio.NewReader(s.reader)
-	for {
-		// Read key length
-		keyLenBytes := make([]byte, 4)
-		_, err := reader.Read(keyLenBytes)
+		blockIndexSz, offset int64
+		lenBuff              [4]byte
+	)
+	for offset < indexOffsetR {
+		n, err := io.ReadFull(reader, lenBuff[:])
 		if err != nil {
-			if err == io.EOF {
+			if err == io.EOF || errors.Is(err, io.ErrUnexpectedEOF) {
 				break
 			}
 			return fmt.Errorf("failed to read key length: %w", err)
 		}
-		keyLen := binary.LittleEndian.Uint32(keyLenBytes)
+		if n != 4 {
+			break
+		}
+		keyLen := binary.LittleEndian.Uint32(lenBuff[:])
 
-		// Read key
 		key := make([]byte, keyLen)
-		_, err = reader.Read(key)
+		n, err = io.ReadFull(reader, key)
 		if err != nil {
 			return fmt.Errorf("failed to read key: %w", err)
 		}
+		if uint32(n) != keyLen {
+			break
+		}
 
-		// Read value length
-		valueLenBytes := make([]byte, 4)
-		_, err = reader.Read(valueLenBytes)
+		n, err = io.ReadFull(reader, lenBuff[:])
 		if err != nil {
 			return fmt.Errorf("failed to read value length: %w", err)
 		}
-		valueLen := binary.LittleEndian.Uint32(valueLenBytes)
+		if n != 4 {
+			break
+		}
+		valueLen := binary.LittleEndian.Uint32(lenBuff[:])
 
-		// Calculate block size (key + value + metadata)
-		blockSize := 4 + int(keyLen) + 4 + int(valueLen) + 8 + 8 // keyLen + key + valueLen + value + seq + meta
+		blockSize := 4 + int(keyLen) + 4 + int(valueLen) + 8 + 8
 
-		// Add to index
 		s.blockIndex = append(s.blockIndex, IndexEntry{
 			Key:         key,
 			BlockOffset: offset,
 			BlockSize:   blockSize,
-			BlockInd:    blockIndex,
+			BlockInd:    int(blockIndexSz),
 		})
 
-		// Skip to next entry
-		_, err = reader.Discard(int(valueLen) + 8 + 8) // value + seq + meta
+		skip := int(valueLen) + seqNumSize + metaSize
+		skipped, err := reader.Discard(skip)
 		if err != nil {
 			return fmt.Errorf("failed to skip to next entry: %w", err)
 		}
+		if skipped != skip {
+			break
+		}
 
 		offset += int64(blockSize)
-		blockIndex++
+		blockIndexSz++
 	}
 
 	return nil

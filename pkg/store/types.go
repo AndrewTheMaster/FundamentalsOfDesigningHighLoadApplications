@@ -7,6 +7,22 @@ import (
 	"lsmdb/pkg/persistance"
 )
 
+const (
+	insertOp operation = iota
+	deleteOp
+)
+
+const (
+	vTypeTombstone valType = iota
+	vTypeBlob
+	vTypeString
+	vTypeJson
+	vTypeInt32
+	vTypeInt64
+	vTypeFloat32
+	vTypeFloat64
+)
+
 var (
 	ErrUnknownValueType = errors.New("unknown value type")
 
@@ -16,6 +32,15 @@ var (
 		vTypeInt32:  newStorable(newInt32),
 	}
 )
+
+type operation uint8
+
+type valType uint8
+
+type value interface {
+	bin() []byte
+	typeOf() valType
+}
 
 type storable interface {
 	typeOf() valType

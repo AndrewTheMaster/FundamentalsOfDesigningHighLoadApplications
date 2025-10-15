@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"lsmdb/pkg/listener"
 	"lsmdb/pkg/types"
 	"os"
 	"path/filepath"
@@ -24,10 +25,11 @@ type Entry struct {
 
 // WAL implements write-ahead logging
 type WAL struct {
+	*listener.Listener[Entry]
+
 	mu       sync.Mutex
 	file     *os.File
 	writer   *bufio.Writer
-	seqNum   seqNum
 	filePath string
 
 	inputCh chan Entry
@@ -50,15 +52,12 @@ func New(dir string) (*WAL, error) {
 		file:     file,
 		writer:   bufio.NewWriter(file),
 		filePath: filePath,
+		inputCh:  make(chan Entry, 3),
+		doneCh:   make(chan seqNum, 3),
 	}
 
-	// Find the highest sequence number
-	if err := wal.scanForLastSequence(); err != nil {
-		if err = file.Close(); err != nil {
-			return nil, err
-		}
-		return nil, fmt.Errorf("failed to scan WAL: %w", err)
-	}
+	// Initialize channels and listener write listener
+	wal.Listener = listener.New(wal.inputCh, wal.writeFile, wal.stop)
 
 	return wal, nil
 }
@@ -67,8 +66,8 @@ func (w *WAL) Append(entry Entry) {
 	w.inputCh <- entry
 }
 
-func (w *WAL) writeFile() error {
-	entry := <-w.inputCh
+// will be called async by WAL.listener on input in WAL.inputCh
+func (w *WAL) writeFile(entry Entry) error {
 	if err := w.writeEntry(entry); err != nil {
 		return fmt.Errorf("failed to write WAL entry: %w", err)
 	}
@@ -78,10 +77,6 @@ func (w *WAL) writeFile() error {
 	}
 	if err := w.file.Sync(); err != nil {
 		return fmt.Errorf("failed to sync WAL: %w", err)
-	}
-
-	if entry.SeqNum > w.seqNum {
-		w.seqNum = entry.SeqNum
 	}
 
 	// Notify completion
@@ -231,39 +226,11 @@ func (w *WAL) readEntry(reader *bufio.Reader) (Entry, error) {
 	return entry, nil
 }
 
-// scanForLastSequence finds the highest sequence number in the WAL file
-func (w *WAL) scanForLastSequence() error {
-	// Get file size
-	stat, err := w.file.Stat()
-	if err != nil {
-		return err
-	}
-
-	if stat.Size() == 0 {
-		w.seqNum = 0
-		return nil
-	}
-
-	// Read the file to find the last sequence
-	reader := bufio.NewReader(w.file)
-	maxSeq := uint64(0)
-
-	for {
-		entry, err := w.readEntry(reader)
-		if err != nil {
-			if errors.Is(err, io.EOF) {
-				break
-			}
-			return err
-		}
-
-		maxSeq = max(maxSeq, entry.SeqNum)
-	}
-
-	w.seqNum = maxSeq
-	return nil
-}
-
 func (w *WAL) Done() <-chan seqNum {
 	return w.doneCh
+}
+
+func (w *WAL) stop() {
+	close(w.inputCh)
+	close(w.doneCh)
 }

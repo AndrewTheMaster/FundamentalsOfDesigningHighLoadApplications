@@ -28,7 +28,10 @@ func main() {
 	fmt.Printf("LSMDB starting (Lab 3 implementation). DataDir=%s\n", cfg.Storage.DataDir)
 
 	// Create store
-	db := store.New(cfg.Storage.DataDir, &timeProvider{})
+	db, err := store.New(cfg.Storage.DataDir, &timeProvider{})
+	if err != nil {
+		panic(err)
+	}
 
 	// Create gRPC server
 	server := rpc.NewServer(db, "8080")

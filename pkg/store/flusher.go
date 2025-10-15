@@ -1,20 +1,18 @@
 package store
 
 import (
-	"context"
-	"errors"
 	"fmt"
+	"lsmdb/pkg/listener"
 	"lsmdb/pkg/memtable"
 	"lsmdb/pkg/persistance"
 )
 
 type Flusher struct {
+	*listener.Listener[memtable.SortedSet]
+
 	lvlManager *persistance.LevelManager
 	manifest   *persistance.Manifest
-	in         <-chan memtable.SortedSet
 	dataDir    string
-
-	cancel func()
 }
 
 func NewFlusher(
@@ -23,36 +21,13 @@ func NewFlusher(
 	manager *persistance.LevelManager,
 	manifest *persistance.Manifest,
 ) *Flusher {
-	return &Flusher{
+	flusher := &Flusher{
 		lvlManager: manager,
 		manifest:   manifest,
 		dataDir:    dataDir,
-		in:         in,
-		cancel:     func() {},
 	}
-}
-
-func (f *Flusher) Start(ctx context.Context) error {
-	ctx, f.cancel = context.WithCancel(ctx)
-	for {
-		if err := f.run(ctx); err != nil {
-			return err
-		}
-	}
-}
-
-func (f *Flusher) run(ctx context.Context) error {
-	select {
-	case ss := <-f.in:
-		err := f.flush(ss)
-		if err != nil {
-			return fmt.Errorf("failed to flush memtable: %w", err)
-		}
-	case <-ctx.Done():
-		return errors.New("flusher stopped by context")
-	}
-
-	return nil
+	flusher.Listener = listener.New(in, flusher.flush)
+	return flusher
 }
 
 func (f *Flusher) flush(ss memtable.SortedSet) error {
@@ -76,13 +51,14 @@ func (f *Flusher) flush(ss memtable.SortedSet) error {
 	sstable := persistance.NewSSTable(filePath, bloom, cache)
 
 	// Convert memtable items to SSTable items
-	sstableItems := make([]persistance.SSTableItem, len(snapshot))
-	for i, item := range snapshot {
-		sstableItems[i] = persistance.SSTableItem{
+	sstableItems := make([]persistance.SSTableItem, 0, len(snapshot))
+	for _, item := range snapshot {
+		sstableItems = append(sstableItems, persistance.SSTableItem{
 			Key:   item.Key,
 			Value: item.Value,
 			Meta:  item.Meta,
-		}
+			ID:    item.SeqN,
+		})
 	}
 
 	// Write data to SSTable
@@ -100,14 +76,11 @@ func (f *Flusher) flush(ss memtable.SortedSet) error {
 		return fmt.Errorf("failed to add SSTable to level manager: %w", err)
 	}
 
-	// Add to manifest
-	if err := f.manifest.AddTable(tableID, filePath, 0, sstable.ApproximateSize()); err != nil {
+	f.manifest.AddTable(tableID, filePath, 0, sstable.ApproximateSize())
+	f.manifest.UpdateMeta(sstableItems)
+	if err := f.manifest.Save(); err != nil {
 		return fmt.Errorf("failed to add table to manifest: %w", err)
 	}
 
 	return nil
-}
-
-func (f *Flusher) Stop() {
-	f.cancel()
 }

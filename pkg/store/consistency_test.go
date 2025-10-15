@@ -91,9 +91,7 @@ func TestDataPersistence(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PutString failed: %v", err)
 	}
-
-	// Close first store
-	// (In real implementation, we would close the store properly)
+	store1.Close()
 
 	// Create second store instance (simulating restart)
 	timeProvider2 := &mockTimeProvider{now: time.Now()}

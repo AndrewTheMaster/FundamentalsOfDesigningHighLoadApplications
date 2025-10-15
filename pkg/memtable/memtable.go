@@ -34,7 +34,7 @@ type Memtable struct {
 func New(threshold uint) *Memtable {
 	mt := Memtable{
 		threshold: uint64(threshold),
-		flushChan: make(chan SortedSet, 2),
+		flushChan: make(chan SortedSet, 3),
 	}
 	mt.underlying.Store(
 		skipmap.NewFunc[[]byte, Item](func(a, b []byte) bool {
@@ -42,6 +42,7 @@ func New(threshold uint) *Memtable {
 		}),
 	)
 	mt.cond = sync.NewCond(&mt.mu)
+
 	return &mt
 }
 
@@ -118,8 +119,11 @@ func (mt *Memtable) rotate(initSize uint64) {
 	current := mt.underlying.Load()
 	mt.flushChan <- &sortedSet{current}
 
-	oldSlice := mt.imm.Load()
-	newSlice := append([]*concurrentSet{}, *oldSlice...)
+	oldSlicePtr := mt.imm.Load()
+	var newSlice []*concurrentSet
+	if oldSlicePtr != nil {
+		newSlice = append([]*concurrentSet{}, *oldSlicePtr...)
+	}
 	newSlice = append(newSlice, current)
 	mt.imm.Store(&newSlice)
 
@@ -133,4 +137,8 @@ func (mt *Memtable) rotate(initSize uint64) {
 
 func (mt *Memtable) FlushChan() <-chan SortedSet {
 	return mt.flushChan
+}
+
+func (mt *Memtable) Close() {
+	close(mt.flushChan)
 }

@@ -232,24 +232,19 @@ func TestCompactionBehavior(t *testing.T) {
 			value := fmt.Sprintf("batch%d_value%d", batchNum, i)
 			err := store.PutString(key, value)
 			if err != nil {
-				// Skip SSTable errors for now
-				t.Logf("PutString failed (expected): %v", err)
-				continue
+				t.Fatalf("PutString failed: %v", err)
 			}
 		}
 
-		// Verify batch data (skip if SSTable errors)
 		for i := 0; i < batchSize; i++ {
 			key := fmt.Sprintf("batch%d_key%d", batchNum, i)
 			expected := fmt.Sprintf("batch%d_value%d", batchNum, i)
 			value, found, err := store.GetString(key)
 			if err != nil {
-				t.Logf("GetString failed (expected): %v", err)
-				continue
+				t.Fatalf("GetString failed: %v", err)
 			}
 			if !found {
-				t.Logf("Key %s not found (expected)", key)
-				continue
+				t.Fatalf("Key %s not found", key)
 			}
 			if value != expected {
 				t.Fatalf("Expected %s, got %s", expected, value)

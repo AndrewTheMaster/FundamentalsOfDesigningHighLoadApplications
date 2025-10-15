@@ -12,7 +12,7 @@ run: build
 
 # Run tests
 test:
-	go test ./...
+	go test -count=1 ./...
 
 # Run tests with coverage
 test-coverage:
