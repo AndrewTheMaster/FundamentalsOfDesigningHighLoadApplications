@@ -116,6 +116,10 @@ func (mt *Memtable) Upsert(k, value []byte, seqN, meta uint64) error {
 }
 
 func (mt *Memtable) rotate(initSize uint64) {
+	const (
+		maxImmCS = 3
+	)
+
 	current := mt.underlying.Load()
 	mt.flushChan <- &sortedSet{current}
 
@@ -125,6 +129,10 @@ func (mt *Memtable) rotate(initSize uint64) {
 		newSlice = append([]*concurrentSet{}, *oldSlicePtr...)
 	}
 	newSlice = append(newSlice, current)
+	if len(newSlice) > maxImmCS {
+		// drop the oldest immutable table
+		newSlice = newSlice[1:]
+	}
 	mt.imm.Store(&newSlice)
 
 	mt.underlying.Store(
