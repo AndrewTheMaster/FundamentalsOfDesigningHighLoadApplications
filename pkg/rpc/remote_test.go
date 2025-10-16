@@ -31,12 +31,15 @@ func TestRemoteAPI(t *testing.T) {
 	}
 	defer os.RemoveAll(tempDir)
 
-	// Create store
+	// Create db
 	timeProvider := &mockTimeProvider{now: time.Now()}
-	store := store.New(tempDir, timeProvider)
+	db, err := store.New(tempDir, timeProvider)
+	if err != nil {
+		t.Fatalf("Failed to create db: %v", err)
+	}
 
 	// Create server
-	server := NewServer(store, "8081")
+	server := NewServer(db, "8081")
 
 	// Test HTTP server
 	httpServer := httptest.NewServer(server.createHTTPHandler())
@@ -173,10 +176,13 @@ func TestRemoteAPIErrorHandling(t *testing.T) {
 
 	// Create store
 	timeProvider := &mockTimeProvider{now: time.Now()}
-	store := store.New(tempDir, timeProvider)
+	db, err := store.New(tempDir, timeProvider)
+	if err != nil {
+		t.Fatalf("Failed to create db: %v", err)
+	}
 
 	// Create server
-	server := NewServer(store, "8081")
+	server := NewServer(db, "8081")
 
 	// Test HTTP server
 	httpServer := httptest.NewServer(server.createHTTPHandler())

@@ -12,7 +12,10 @@ func TestDataConsistency(t *testing.T) {
 
 	// Create store
 	timeProvider := &mockTimeProvider{now: time.Now()}
-	store := New(tempDir, timeProvider)
+	store, err := New(tempDir, timeProvider)
+	if err != nil {
+		t.Fatalf("Failed to create store: %v", err)
+	}
 
 	// Test data consistency
 	t.Run("BasicConsistency", func(t *testing.T) {
@@ -57,9 +60,9 @@ func TestDataConsistency(t *testing.T) {
 
 	t.Run("DeleteConsistency", func(t *testing.T) {
 		// Delete data
-		err := store.DeleteString("key1")
+		err := store.Delete("key1")
 		if err != nil {
-			t.Fatalf("DeleteString failed: %v", err)
+			t.Fatalf("Delete failed: %v", err)
 		}
 
 		// Try to read deleted data
@@ -79,20 +82,23 @@ func TestDataPersistence(t *testing.T) {
 
 	// Create first store instance
 	timeProvider1 := &mockTimeProvider{now: time.Now()}
-	store1 := New(tempDir, timeProvider1)
-
+	store1, err := New(tempDir, timeProvider1)
+	if err != nil {
+		t.Fatalf("Failed to create store: %v", err)
+	}
 	// Write data
-	err := store1.PutString("persistent_key", "persistent_value")
+	err = store1.PutString("persistent_key", "persistent_value")
 	if err != nil {
 		t.Fatalf("PutString failed: %v", err)
 	}
-
-	// Close first store
-	// (In real implementation, we would close the store properly)
+	store1.Close()
 
 	// Create second store instance (simulating restart)
 	timeProvider2 := &mockTimeProvider{now: time.Now()}
-	store2 := New(tempDir, timeProvider2)
+	store2, err := New(tempDir, timeProvider2)
+	if err != nil {
+		t.Fatalf("Failed to create store: %v", err)
+	}
 
 	// Read data from second store
 	value, found, err := store2.GetString("persistent_key")
@@ -113,7 +119,10 @@ func TestConcurrentConsistency(t *testing.T) {
 
 	// Create store
 	timeProvider := &mockTimeProvider{now: time.Now()}
-	store := New(tempDir, timeProvider)
+	store, err := New(tempDir, timeProvider)
+	if err != nil {
+		t.Fatalf("Failed to create store: %v", err)
+	}
 
 	// Test concurrent writes to different keys
 	done := make(chan bool, 10)
@@ -161,7 +170,10 @@ func TestTransactionConsistency(t *testing.T) {
 
 	// Create store
 	timeProvider := &mockTimeProvider{now: time.Now()}
-	store := New(tempDir, timeProvider)
+	store, err := New(tempDir, timeProvider)
+	if err != nil {
+		t.Fatalf("Failed to create store: %v", err)
+	}
 
 	// Simulate transaction: write multiple keys
 	keys := []string{"tx_key1", "tx_key2", "tx_key3"}

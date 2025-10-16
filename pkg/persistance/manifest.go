@@ -3,6 +3,7 @@ package persistance
 import (
 	"encoding/json"
 	"fmt"
+	"lsmdb/pkg/types"
 	"os"
 	"path/filepath"
 	"sync"
@@ -17,9 +18,10 @@ type Manifest struct {
 
 // ManifestData represents the manifest data
 type ManifestData struct {
-	NextTableID uint64              `json:"next_table_id"`
-	Levels      map[int][]TableInfo `json:"levels"`
-	Version     int                 `json:"version"`
+	NextTableID  uint64              `json:"next_table_id"`
+	Levels       map[int][]TableInfo `json:"levels"`
+	Version      int                 `json:"version"`
+	PersistentID types.SeqN          `json:"persistent_id"`
 }
 
 // TableInfo represents information about an SSTable
@@ -97,14 +99,14 @@ func (m *Manifest) save() error {
 }
 
 // AddTable adds a table to the manifest
-func (m *Manifest) AddTable(tableID uint64, filePath string, level int, size int64) error {
+func (m *Manifest) AddTable(
+	tableID uint64,
+	filePath string,
+	level int,
+	size int64,
+) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-
-	// Initialize level if it doesn't exist
-	if m.metadata.Levels[level] == nil {
-		m.metadata.Levels[level] = make([]TableInfo, 0)
-	}
 
 	// Add table info
 	tableInfo := TableInfo{
@@ -120,8 +122,6 @@ func (m *Manifest) AddTable(tableID uint64, filePath string, level int, size int
 	if tableID >= m.metadata.NextTableID {
 		m.metadata.NextTableID = tableID + 1
 	}
-
-	return m.save()
 }
 
 // RemoveTable removes a table from the manifest
@@ -276,4 +276,20 @@ func (m *Manifest) GetLevelSize(level int) int64 {
 	}
 
 	return totalSize
+}
+
+func (m *Manifest) UpdateMeta(items []SSTableItem) {
+	persistentID := m.metadata.PersistentID
+	for i := range items {
+		persistentID = max(persistentID, items[i].ID)
+	}
+
+	// TODO optimize lock
+	m.mu.RLock()
+	m.metadata.PersistentID = persistentID
+	m.mu.RUnlock()
+}
+
+func (m *Manifest) PersistentID() types.SeqN {
+	return m.metadata.PersistentID
 }
