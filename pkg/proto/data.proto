@@ -1,0 +1,24 @@
+syntax = "proto3";
+
+package lsmdb.pkg.proto;
+
+option go_package = "./pkg/proto";
+
+message SocialPost {
+  string id = 1;
+  string user_id = 2;
+  string fullname = 3;
+  string url = 4;
+  int64 timestamp = 5;
+  int32 replies = 6;
+  int32 likes = 7;
+  int32 retweets = 8;
+  string text = 9;
+}
+
+message KeyValue {
+  string key = 1;
+  bytes value = 2;
+  int64 timestamp = 3;
+  bool deleted = 4;
+}
