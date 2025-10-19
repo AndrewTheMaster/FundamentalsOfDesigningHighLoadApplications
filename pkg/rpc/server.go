@@ -114,7 +114,7 @@ func (s *Server) createHTTPHandler() http.Handler {
 			return
 		}
 
-		err := s.store.DeleteString(key)
+		err := s.store.Delete(key)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
