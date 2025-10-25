@@ -41,6 +41,7 @@ func TestRemoteAPI(t *testing.T) {
 	if err = server.Start(); err != nil {
 		t.Fatal(err)
 	}
+	//nolint:errcheck
 	defer server.Stop()
 
 	// wait for server start
@@ -208,6 +209,7 @@ func TestRemoteAPIErrorHandling(t *testing.T) {
 	if err = server.Start(); err != nil {
 		t.Fatal(err)
 	}
+	//nolint:errcheck
 	defer server.Stop()
 
 	t.Run("PUT without key", func(t *testing.T) {
