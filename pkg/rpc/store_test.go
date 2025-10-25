@@ -4,7 +4,8 @@ import (
 	"testing"
 )
 
-func TestRemoteStore_PutString_GetString(t *testing.T) {
+func TestStore_PutString_GetString(t *testing.T) {
+	// Create remote store client
 	store := NewRemoteStore("http://localhost:8081")
 
 	// Test PutString
@@ -26,7 +27,8 @@ func TestRemoteStore_PutString_GetString(t *testing.T) {
 	}
 }
 
-func TestRemoteStore_DeleteString(t *testing.T) {
+func TestStore_DeleteString(t *testing.T) {
+	// Create remote store client
 	store := NewRemoteStore("http://localhost:8081")
 
 	// Put a value
@@ -60,7 +62,8 @@ func TestRemoteStore_DeleteString(t *testing.T) {
 	}
 }
 
-func TestRemoteStore_Overwrite(t *testing.T) {
+func TestStore_Overwrite(t *testing.T) {
+	// Create remote store client
 	store := NewRemoteStore("http://localhost:8081")
 
 	// Put initial value
@@ -88,7 +91,8 @@ func TestRemoteStore_Overwrite(t *testing.T) {
 	}
 }
 
-func TestRemoteStore_MultipleKeys(t *testing.T) {
+func TestStore_MultipleKeys(t *testing.T) {
+	// Create remote store client
 	store := NewRemoteStore("http://localhost:8081")
 
 	// Put multiple keys
@@ -117,7 +121,8 @@ func TestRemoteStore_MultipleKeys(t *testing.T) {
 	}
 }
 
-func TestRemoteStore_NonExistentKey(t *testing.T) {
+func TestStore_NonExistentKey(t *testing.T) {
+	// Create remote store client
 	store := NewRemoteStore("http://localhost:8081")
 
 	// Try to Get non-existent key
