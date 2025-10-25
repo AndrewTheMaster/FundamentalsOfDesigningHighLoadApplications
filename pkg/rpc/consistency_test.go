@@ -2,7 +2,9 @@ package rpc
 
 import (
 	"fmt"
+	"os/exec"
 	"testing"
+	"time"
 )
 
 // TestDataConsistency tests data consistency across operations
@@ -82,7 +84,13 @@ func TestDataPersistence(t *testing.T) {
 
 	// Restart the container
 	t.Log("Restarting container...")
-	// Note: В реальном сценарии здесь был бы рестарт контейнера
+	cmd := exec.Command("docker-compose", "restart", "lsmdb")
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("Failed to restart container: %v", err)
+	}
+
+	// Wait for container to be healthy
+	time.Sleep(2 * time.Second)
 
 	// Read data after restart
 	value, found, err := store.GetString("persistent_key")
