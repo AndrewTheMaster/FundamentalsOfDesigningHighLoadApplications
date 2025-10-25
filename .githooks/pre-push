@@ -1,8 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-echo "Running pre-commit checks (prefer Taskfile)
-"
+# Инструкции:
+# 1) Поместите этот файл в ` .githooks/pre-push`
+# 2) Сделайте исполняемым: chmod +x .githooks/pre-push
+# 3) Установите путь к хукам в репозитории: git config core.hooksPath .githooks
+
+echo "Running pre-push checks..."
 
 if command -v task >/dev/null 2>&1; then
   echo "Using task from Taskfile.yml"
@@ -11,11 +15,10 @@ if command -v task >/dev/null 2>&1; then
   task lint
   task build
   task test
-  echo "Pre-commit (via task) passed"
+  echo "Pre-push (via task) passed"
   exit 0
 fi
 
-# Fallback if task is not installed
 echo "task not found, running fallback checks..."
 
 # 1) Build
@@ -37,7 +40,7 @@ if command -v golangci-lint >/dev/null 2>&1; then
   echo "Running golangci-lint..."
   golangci-lint run --timeout 5m
 else
-  echo "golangci-lint not found; skipping lint step (install with 'go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest' or use 'task lint')"
+  echo "golangci-lint not found; skipping lint step"
 fi
 
 # 4) Tests
@@ -46,4 +49,4 @@ if ! go test ./... -v; then
   exit 1
 fi
 
-echo "Pre-commit fallback checks passed"
+echo "Pre-push checks passed"
