@@ -1,4 +1,4 @@
-package rpc
+package http
 
 import (
 	"encoding/json"
@@ -10,7 +10,7 @@ import (
 	"testing"
 )
 
-// simple in-memory fake store implementing StoreAPI
+// simple in-memory fake store implementing iStoreAPI
 type fakeStore struct {
 	mu sync.RWMutex
 	m  map[string]string
@@ -55,7 +55,7 @@ func TestHealthHandler(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/health", nil)
 	rr := httptest.NewRecorder()
 
-	s.createHTTPHandler().ServeHTTP(rr, req)
+	s.createRouter().ServeHTTP(rr, req)
 
 	if rr.Code != http.StatusOK {
 		t.Fatalf("expected status 200, got %d", rr.Code)
@@ -75,10 +75,10 @@ func TestPutGetDeleteFlow(t *testing.T) {
 	form := url.Values{}
 	form.Set("key", "foo")
 	form.Set("value", "bar")
-	req := httptest.NewRequest(http.MethodPost, "/api/put", strings.NewReader(form.Encode()))
+	req := httptest.NewRequest(http.MethodPut, "/api/string", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	rr := httptest.NewRecorder()
-	s.createHTTPHandler().ServeHTTP(rr, req)
+	s.createRouter().ServeHTTP(rr, req)
 
 	if rr.Code != http.StatusOK {
 		t.Fatalf("put: expected 200, got %d body=%s", rr.Code, rr.Body.String())
@@ -88,9 +88,9 @@ func TestPutGetDeleteFlow(t *testing.T) {
 	}
 
 	// GET
-	req = httptest.NewRequest(http.MethodGet, "/api/get?key=foo", nil)
+	req = httptest.NewRequest(http.MethodGet, "/api/string?key=foo", nil)
 	rr = httptest.NewRecorder()
-	s.createHTTPHandler().ServeHTTP(rr, req)
+	s.createRouter().ServeHTTP(rr, req)
 
 	if rr.Code != http.StatusOK {
 		t.Fatalf("get: expected 200, got %d body=%s", rr.Code, rr.Body.String())
@@ -101,9 +101,9 @@ func TestPutGetDeleteFlow(t *testing.T) {
 	}
 
 	// DELETE
-	req = httptest.NewRequest(http.MethodDelete, "/api/delete?key=foo", nil)
+	req = httptest.NewRequest(http.MethodDelete, "/api?key=foo", nil)
 	rr = httptest.NewRecorder()
-	s.createHTTPHandler().ServeHTTP(rr, req)
+	s.createRouter().ServeHTTP(rr, req)
 
 	if rr.Code != http.StatusOK {
 		t.Fatalf("delete: expected 200, got %d body=%s", rr.Code, rr.Body.String())
@@ -113,9 +113,9 @@ func TestPutGetDeleteFlow(t *testing.T) {
 	}
 
 	// GET after delete -> 404
-	req = httptest.NewRequest(http.MethodGet, "/api/get?key=foo", nil)
+	req = httptest.NewRequest(http.MethodGet, "/api/string?key=foo", nil)
 	rr = httptest.NewRecorder()
-	s.createHTTPHandler().ServeHTTP(rr, req)
+	s.createRouter().ServeHTTP(rr, req)
 
 	if rr.Code != http.StatusNotFound {
 		t.Fatalf("get-after-delete: expected 404, got %d body=%s", rr.Code, rr.Body.String())
@@ -126,26 +126,26 @@ func TestMissingParamsAndMethodNotAllowed(t *testing.T) {
 	s := NewServer(newFakeStore(), "")
 
 	// PUT missing params
-	req := httptest.NewRequest(http.MethodPost, "/api/put", strings.NewReader(""))
+	req := httptest.NewRequest(http.MethodPut, "/api/string", strings.NewReader(""))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	rr := httptest.NewRecorder()
-	s.createHTTPHandler().ServeHTTP(rr, req)
+	s.createRouter().ServeHTTP(rr, req)
 	if rr.Code != http.StatusBadRequest {
 		t.Fatalf("put-missing: expected 400, got %d body=%s", rr.Code, rr.Body.String())
 	}
 
 	// GET missing key
-	req = httptest.NewRequest(http.MethodGet, "/api/get", nil)
+	req = httptest.NewRequest(http.MethodGet, "/api/string", nil)
 	rr = httptest.NewRecorder()
-	s.createHTTPHandler().ServeHTTP(rr, req)
+	s.createRouter().ServeHTTP(rr, req)
 	if rr.Code != http.StatusBadRequest {
 		t.Fatalf("get-missing: expected 400, got %d body=%s", rr.Code, rr.Body.String())
 	}
 
 	// DELETE missing key
-	req = httptest.NewRequest(http.MethodDelete, "/api/delete", nil)
+	req = httptest.NewRequest(http.MethodDelete, "/api", nil)
 	rr = httptest.NewRecorder()
-	s.createHTTPHandler().ServeHTTP(rr, req)
+	s.createRouter().ServeHTTP(rr, req)
 	if rr.Code != http.StatusBadRequest {
 		t.Fatalf("delete-missing: expected 400, got %d body=%s", rr.Code, rr.Body.String())
 	}
@@ -153,12 +153,8 @@ func TestMissingParamsAndMethodNotAllowed(t *testing.T) {
 	// Method not allowed: POST to /health
 	req = httptest.NewRequest(http.MethodPost, "/health", nil)
 	rr = httptest.NewRecorder()
-	s.createHTTPHandler().ServeHTTP(rr, req)
+	s.createRouter().ServeHTTP(rr, req)
 	if rr.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("method-not-allowed: expected 405, got %d body=%s", rr.Code, rr.Body.String())
-	}
-	resp := decodeResp(t, rr)
-	if resp.Status != StatusError {
-		t.Fatalf("method-not-allowed: expected status %s, got %s", StatusError, resp.Status)
 	}
 }

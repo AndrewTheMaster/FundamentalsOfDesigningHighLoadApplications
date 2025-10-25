@@ -1,4 +1,4 @@
-package rpc
+package http
 
 import (
 	"bytes"
@@ -6,9 +6,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"testing"
+	"time"
 
 	"lsmdb/pkg/config"
 	"lsmdb/pkg/store"
@@ -38,10 +38,13 @@ func TestRemoteAPI(t *testing.T) {
 
 	// Create server
 	server := NewServer(db, "8081")
+	if err = server.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer server.Stop()
 
-	// Test HTTP server
-	httpServer := httptest.NewServer(server.createHTTPHandler())
-	defer httpServer.Close()
+	// wait for server start
+	time.Sleep(1 * time.Second)
 
 	// Test data
 	testKey := "remote_test_key"
@@ -52,10 +55,21 @@ func TestRemoteAPI(t *testing.T) {
 		formData := fmt.Sprintf("key=%s&value=%s", testKey, testValue)
 
 		// Make PUT request
-		resp, err := http.Post(httpServer.URL+"/api/put", "application/x-www-form-urlencoded", bytes.NewBufferString(formData))
+		req, err := http.NewRequest(
+			http.MethodPut,
+			server.URL+"/api/string",
+			bytes.NewBufferString(formData),
+		)
 		if err != nil {
 			t.Fatalf("PUT request failed: %v", err)
 		}
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("PUT request failed: %v", err)
+		}
+
 		defer resp.Body.Close()
 
 		// Check response
@@ -77,7 +91,7 @@ func TestRemoteAPI(t *testing.T) {
 
 	t.Run("GET operation", func(t *testing.T) {
 		// Make GET request
-		resp, err := http.Get(httpServer.URL + "/api/get?key=" + testKey)
+		resp, err := http.Get(server.URL + "/api/string?key=" + testKey)
 		if err != nil {
 			t.Fatalf("GET request failed: %v", err)
 		}
@@ -102,7 +116,7 @@ func TestRemoteAPI(t *testing.T) {
 
 	t.Run("DELETE operation", func(t *testing.T) {
 		// Make DELETE request
-		req, err := http.NewRequest("DELETE", httpServer.URL+"/api/delete?key="+testKey, nil)
+		req, err := http.NewRequest("DELETE", server.URL+"/api?key="+testKey, nil)
 		if err != nil {
 			t.Fatalf("Failed to create DELETE request: %v", err)
 		}
@@ -133,7 +147,7 @@ func TestRemoteAPI(t *testing.T) {
 
 	t.Run("GET after DELETE", func(t *testing.T) {
 		// Try to get deleted key
-		resp, err := http.Get(httpServer.URL + "/api/get?key=" + testKey)
+		resp, err := http.Get(server.URL + "/api/string?key=" + testKey)
 		if err != nil {
 			t.Fatalf("GET request failed: %v", err)
 		}
@@ -147,7 +161,7 @@ func TestRemoteAPI(t *testing.T) {
 	})
 
 	t.Run("Health check", func(t *testing.T) {
-		resp, err := http.Get(httpServer.URL + "/health")
+		resp, err := http.Get(server.URL + "/health")
 		if err != nil {
 			t.Fatalf("Health check failed: %v", err)
 		}
@@ -191,17 +205,29 @@ func TestRemoteAPIErrorHandling(t *testing.T) {
 
 	// Create server
 	server := NewServer(db, "8081")
-
-	// Test HTTP server
-	httpServer := httptest.NewServer(server.createHTTPHandler())
-	defer httpServer.Close()
+	if err = server.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer server.Stop()
 
 	t.Run("PUT without key", func(t *testing.T) {
 		formData := "value=test"
-		resp, err := http.Post(httpServer.URL+"/api/put", "application/x-www-form-urlencoded", bytes.NewBufferString(formData))
+		// Make PUT request
+		req, err := http.NewRequest(
+			http.MethodPut,
+			server.URL+"/api/string",
+			bytes.NewBufferString(formData),
+		)
 		if err != nil {
 			t.Fatalf("PUT request failed: %v", err)
 		}
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("PUT request failed: %v", err)
+		}
+
 		defer resp.Body.Close()
 
 		if resp.StatusCode != http.StatusBadRequest {
@@ -210,7 +236,7 @@ func TestRemoteAPIErrorHandling(t *testing.T) {
 	})
 
 	t.Run("GET without key", func(t *testing.T) {
-		resp, err := http.Get(httpServer.URL + "/api/get")
+		resp, err := http.Get(server.URL + "/api/string")
 		if err != nil {
 			t.Fatalf("GET request failed: %v", err)
 		}
@@ -222,7 +248,7 @@ func TestRemoteAPIErrorHandling(t *testing.T) {
 	})
 
 	t.Run("GET non-existent key", func(t *testing.T) {
-		resp, err := http.Get(httpServer.URL + "/api/get?key=nonexistent")
+		resp, err := http.Get(server.URL + "/api/get?key=nonexistent")
 		if err != nil {
 			t.Fatalf("GET request failed: %v", err)
 		}

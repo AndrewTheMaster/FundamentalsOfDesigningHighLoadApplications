@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"lsmdb/internal/rpc"
+	"lsmdb/internal/http"
 	"lsmdb/pkg/store"
 	"lsmdb/pkg/wal"
 	"os/signal"
@@ -38,7 +38,7 @@ func main() {
 	}
 
 	// Create gRPC server
-	server := rpc.NewServer(
+	server := http.NewServer(
 		db,
 		fmt.Sprintf("%d", cfg.Server.Port),
 	)

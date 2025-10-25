@@ -1,4 +1,4 @@
-package rpc
+package http
 
 import (
 	"context"
@@ -7,16 +7,18 @@ import (
 	"log/slog"
 	"net/http"
 	"time"
+
+	"github.com/go-chi/chi/v5"
 )
 
 const (
-	defaultHTTPPort        = "8081"
 	contentTypeJSON        = "application/json"
+	defaultHTTPPort        = "8080"
 	defaultShutdownTimeout = time.Second * 5
 )
 
-// StoreAPI is a minimal interface used by RPC handlers. It allows using a fake store in tests.
-type StoreAPI interface {
+// iStoreAPI is a minimal interface used by RPC handlers. It allows using a fake store in tests.
+type iStoreAPI interface {
 	PutString(key, value string) error
 	GetString(key string) (string, bool, error)
 	Delete(key string) error
@@ -24,19 +26,21 @@ type StoreAPI interface {
 
 // Server represents the HTTP server with storage
 type Server struct {
-	store      StoreAPI
+	store      iStoreAPI
 	httpServer *http.Server
-	port       string
+	URL        string
+	addr       string
 }
 
-// NewServer creates a new server instance. Accepts any implementation of StoreAPI (including *store.Store).
-func NewServer(store StoreAPI, port string) *Server {
+// NewServer creates a new server instance. Accepts any implementation of iStoreAPI (including *store.Store).
+func NewServer(store iStoreAPI, port string) *Server {
 	if port == "" {
 		port = defaultHTTPPort
 	}
 	return &Server{
 		store: store,
-		port:  port,
+		URL:   "http://localhost:" + port,
+		addr:  ":" + port,
 	}
 }
 
@@ -61,23 +65,23 @@ func (s *Server) Stop() error {
 	return nil
 }
 
-func (s *Server) createHTTPHandler() http.Handler {
-	mux := http.NewServeMux()
+// createRouter builds chi router
+func (s *Server) createRouter() http.Handler {
+	r := chi.NewRouter()
 
-	mux.HandleFunc("/health", s.handleHealth)
-	mux.HandleFunc("/metrics", s.handleMetrics)
-	mux.HandleFunc("/api/put", s.handlePut)
-	mux.HandleFunc("/api/get", s.handleGet)
-	mux.HandleFunc("/api/delete", s.handleDelete)
+	r.Get("/health", s.handleHealth)
+	r.Get("/metrics", s.handleMetrics)
+	r.Put("/api/string", s.handlePut)
+	r.Get("/api/string", s.handleGet)
+	r.Delete("/api", s.handleDelete)
 
-	return mux
+	return r
 }
 
 func (s *Server) startHTTPServer() error {
-	addr := ":" + s.port
 	s.httpServer = &http.Server{
-		Addr:              addr,
-		Handler:           s.createHTTPHandler(),
+		Addr:              s.addr,
+		Handler:           s.createRouter(),
 		ReadHeaderTimeout: time.Second,
 	}
 
@@ -87,7 +91,7 @@ func (s *Server) startHTTPServer() error {
 		}
 	}()
 
-	slog.Info("HTTP server started", "port", s.port)
+	slog.Info("HTTP server started", "addr", s.URL)
 	return nil
 }
 
@@ -100,30 +104,16 @@ func (s *Server) writeJSON(w http.ResponseWriter, status int, data interface{}) 
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		s.writeJSON(w, http.StatusMethodNotAllowed, NewErrorResponse("Method not allowed"))
-		return
-	}
 	s.writeJSON(w, http.StatusOK, NewOKResponse())
 }
 
 func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		s.writeJSON(w, http.StatusMethodNotAllowed, NewErrorResponse("Method not allowed"))
-		return
-	}
-	// write metrics text and check error to satisfy linters
 	if _, err := w.Write([]byte("# LSMDB Metrics\n")); err != nil {
 		slog.Warn("Failed to write metrics response", "error", err)
 	}
 }
 
 func (s *Server) handlePut(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		s.writeJSON(w, http.StatusMethodNotAllowed, NewErrorResponse("Method not allowed"))
-		return
-	}
-
 	if err := r.ParseForm(); err != nil {
 		s.writeJSON(w, http.StatusBadRequest, NewErrorResponse("Failed to parse form"))
 		return
@@ -146,11 +136,6 @@ func (s *Server) handlePut(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleGet(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		s.writeJSON(w, http.StatusMethodNotAllowed, NewErrorResponse("Method not allowed"))
-		return
-	}
-
 	key := r.URL.Query().Get("key")
 	if key == "" {
 		s.writeJSON(w, http.StatusBadRequest, NewErrorResponse("Missing key"))
@@ -172,11 +157,6 @@ func (s *Server) handleGet(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodDelete {
-		s.writeJSON(w, http.StatusMethodNotAllowed, NewErrorResponse("Method not allowed"))
-		return
-	}
-
 	key := r.URL.Query().Get("key")
 	if key == "" {
 		s.writeJSON(w, http.StatusBadRequest, NewErrorResponse("Missing key"))

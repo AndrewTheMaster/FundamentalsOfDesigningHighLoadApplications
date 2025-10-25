@@ -1,4 +1,4 @@
-package rpc
+package http
 
 type Status string
 
