@@ -4,7 +4,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"lsmdb/pkg/memtable"
-	"lsmdb/pkg/persistance"
+	"lsmdb/pkg/persistence"
 )
 
 const (
@@ -62,7 +62,7 @@ func fromMemtableItem(item memtable.Item) (storable, error) {
 	return nil, ErrUnknownValueType
 }
 
-func fromSStableItem(item persistance.SSTableItem) (storable, error) {
+func fromSStableItem(item persistence.SSTableItem) (storable, error) {
 	md := MD(item.Meta)
 	if build, ok := buildMap[md.valType()]; ok {
 		return build(item.Value), nil

@@ -9,19 +9,11 @@ import (
 	"net/http/httptest"
 	"os"
 	"testing"
-	"time"
 
+	"lsmdb/pkg/config"
 	"lsmdb/pkg/store"
+	"lsmdb/pkg/wal"
 )
-
-// mockTimeProvider for testing
-type mockTimeProvider struct {
-	now time.Time
-}
-
-func (m *mockTimeProvider) Now() time.Time {
-	return m.now
-}
 
 func TestRemoteAPI(t *testing.T) {
 	// Create temp directory
@@ -32,8 +24,14 @@ func TestRemoteAPI(t *testing.T) {
 	defer os.RemoveAll(tempDir)
 
 	// Create db
-	timeProvider := &mockTimeProvider{now: time.Now()}
-	db, err := store.New(tempDir, timeProvider)
+	cfg := config.Default()
+	cfg.Persistence.RootPath = tempDir
+	journal, err := wal.New(cfg.Persistence.RootPath)
+	if err != nil {
+		t.Fatalf("Failed to create WAL: %v", err)
+	}
+	defer journal.Close()
+	db, err := store.New(&cfg, journal)
 	if err != nil {
 		t.Fatalf("Failed to create db: %v", err)
 	}
@@ -159,9 +157,13 @@ func TestRemoteAPI(t *testing.T) {
 			t.Fatalf("Health check failed with status %d", resp.StatusCode)
 		}
 
-		body, _ := io.ReadAll(resp.Body)
-		if string(body) != "OK" {
-			t.Fatalf("Expected 'OK', got: %s", string(body))
+		// Expect JSON response: {"status":"OK"}
+		var result map[string]string
+		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+			t.Fatalf("Failed to decode health response JSON: %v", err)
+		}
+		if result["status"] != string(StatusOK) {
+			t.Fatalf("Expected status %s, got: %s", StatusOK, result["status"])
 		}
 	})
 }
@@ -175,8 +177,14 @@ func TestRemoteAPIErrorHandling(t *testing.T) {
 	defer os.RemoveAll(tempDir)
 
 	// Create store
-	timeProvider := &mockTimeProvider{now: time.Now()}
-	db, err := store.New(tempDir, timeProvider)
+	cfg := config.Default()
+	cfg.Persistence.RootPath = tempDir
+	journal, err := wal.New(cfg.Persistence.RootPath)
+	if err != nil {
+		t.Fatalf("Failed to create WAL: %v", err)
+	}
+	defer journal.Close()
+	db, err := store.New(&cfg, journal)
 	if err != nil {
 		t.Fatalf("Failed to create db: %v", err)
 	}

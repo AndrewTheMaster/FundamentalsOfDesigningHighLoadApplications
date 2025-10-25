@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+echo "Running pre-commit checks (prefer Taskfile)
+"
+
+if command -v task >/dev/null 2>&1; then
+  echo "Using task from Taskfile.yml"
+  task deps
+  task fmt
+  task lint
+  task build
+  task test
+  echo "Pre-commit (via task) passed"
+  exit 0
+fi
+
+# Fallback if task is not installed
+echo "task not found, running fallback checks..."
+
+# 1) Build
+if ! go build ./...; then
+  echo "Build failed"
+  exit 1
+fi
+
+# 2) gofmt (check)
+FMT_OUT=$(gofmt -l .)
+if [ -n "$FMT_OUT" ]; then
+  echo "The following files are not gofmt'ed. Run 'gofmt -w .' to fix."
+  echo "$FMT_OUT"
+  exit 1
+fi
+
+# 3) Linter (if installed)
+if command -v golangci-lint >/dev/null 2>&1; then
+  echo "Running golangci-lint..."
+  golangci-lint run --timeout 5m
+else
+  echo "golangci-lint not found; skipping lint step (install with 'go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest' or use 'task lint')"
+fi
+
+# 4) Tests
+if ! go test ./... -v; then
+  echo "Tests failed"
+  exit 1
+fi
+
+echo "Pre-commit fallback checks passed"

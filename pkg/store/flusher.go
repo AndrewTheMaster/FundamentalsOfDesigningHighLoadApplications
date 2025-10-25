@@ -4,22 +4,22 @@ import (
 	"fmt"
 	"lsmdb/pkg/listener"
 	"lsmdb/pkg/memtable"
-	"lsmdb/pkg/persistance"
+	"lsmdb/pkg/persistence"
 )
 
 type Flusher struct {
 	*listener.Listener[memtable.SortedSet]
 
-	lvlManager *persistance.LevelManager
-	manifest   *persistance.Manifest
+	lvlManager *persistence.LevelManager
+	manifest   *persistence.Manifest
 	dataDir    string
 }
 
 func NewFlusher(
 	in <-chan memtable.SortedSet,
 	dataDir string,
-	manager *persistance.LevelManager,
-	manifest *persistance.Manifest,
+	manager *persistence.LevelManager,
+	manifest *persistence.Manifest,
 ) *Flusher {
 	flusher := &Flusher{
 		lvlManager: manager,
@@ -42,18 +42,18 @@ func (f *Flusher) flush(ss memtable.SortedSet) error {
 	filePath := fmt.Sprintf("%s/L0_%d.sst", f.dataDir, tableID)
 
 	// Create bloom filter
-	bloom := persistance.NewBloomFilter(uint32(len(snapshot)), 0.01)
+	bloom := persistence.NewBloomFilter(uint32(len(snapshot)), 0.01)
 
 	// Create cache
-	cache := persistance.NewBlockCache(100)
+	cache := persistence.NewBlockCache(100)
 
 	// Create SSTable
-	sstable := persistance.NewSSTable(filePath, bloom, cache)
+	sstable := persistence.NewSSTable(filePath, bloom, cache)
 
 	// Convert memtable items to SSTable items
-	sstableItems := make([]persistance.SSTableItem, 0, len(snapshot))
+	sstableItems := make([]persistence.SSTableItem, 0, len(snapshot))
 	for _, item := range snapshot {
-		sstableItems = append(sstableItems, persistance.SSTableItem{
+		sstableItems = append(sstableItems, persistence.SSTableItem{
 			Key:   item.Key,
 			Value: item.Value,
 			Meta:  item.Meta,

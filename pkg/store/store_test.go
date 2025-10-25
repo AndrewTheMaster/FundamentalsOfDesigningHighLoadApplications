@@ -1,23 +1,20 @@
 package store
 
 import (
+	"lsmdb/pkg/config"
+	"lsmdb/pkg/wal"
 	"testing"
-	"time"
 )
 
-// mockTimeProvider implements iTimeProvider for testing
-type mockTimeProvider struct {
-	now time.Time
-}
-
-func (m *mockTimeProvider) Now() time.Time {
-	return m.now
-}
-
 func TestStore_PutString_GetString(t *testing.T) {
-	// Create store
-	timeProvider := &mockTimeProvider{now: time.Now()}
-	store, err := New("/tmp/test", timeProvider)
+	cfg := config.Default()
+	cfg.Persistence.RootPath = t.TempDir()
+	journal, err := wal.New(cfg.Persistence.RootPath)
+	if err != nil {
+		t.Fatalf("Failed to create WAL: %v", err)
+	}
+	defer journal.Close()
+	store, err := New(&cfg, journal)
 	if err != nil {
 		t.Fatalf("Failed to create store: %v", err)
 	}
@@ -42,9 +39,14 @@ func TestStore_PutString_GetString(t *testing.T) {
 }
 
 func TestStore_DeleteString(t *testing.T) {
-	// Create store
-	timeProvider := &mockTimeProvider{now: time.Now()}
-	store, err := New("/tmp/test", timeProvider)
+	cfg := config.Default()
+	cfg.Persistence.RootPath = t.TempDir()
+	journal, err := wal.New(cfg.Persistence.RootPath)
+	if err != nil {
+		t.Fatalf("Failed to create WAL: %v", err)
+	}
+	defer journal.Close()
+	store, err := New(&cfg, journal)
 	if err != nil {
 		t.Fatalf("Failed to create store: %v", err)
 	}
@@ -81,9 +83,14 @@ func TestStore_DeleteString(t *testing.T) {
 }
 
 func TestStore_Overwrite(t *testing.T) {
-	// Create store
-	timeProvider := &mockTimeProvider{now: time.Now()}
-	store, err := New("/tmp/test", timeProvider)
+	cfg := config.Default()
+	cfg.Persistence.RootPath = t.TempDir()
+	journal, err := wal.New(cfg.Persistence.RootPath)
+	if err != nil {
+		t.Fatalf("Failed to create WAL: %v", err)
+	}
+	defer journal.Close()
+	store, err := New(&cfg, journal)
 	if err != nil {
 		t.Fatalf("Failed to create store: %v", err)
 	}
@@ -114,9 +121,14 @@ func TestStore_Overwrite(t *testing.T) {
 }
 
 func TestStore_MultipleKeys(t *testing.T) {
-	// Create store
-	timeProvider := &mockTimeProvider{now: time.Now()}
-	store, err := New("/tmp/test", timeProvider)
+	cfg := config.Default()
+	cfg.Persistence.RootPath = t.TempDir()
+	journal, err := wal.New(cfg.Persistence.RootPath)
+	if err != nil {
+		t.Fatalf("Failed to create WAL: %v", err)
+	}
+	defer journal.Close()
+	store, err := New(&cfg, journal)
 	if err != nil {
 		t.Fatalf("Failed to create store: %v", err)
 	}
@@ -148,9 +160,14 @@ func TestStore_MultipleKeys(t *testing.T) {
 }
 
 func TestStore_NonExistentKey(t *testing.T) {
-	// Create store
-	timeProvider := &mockTimeProvider{now: time.Now()}
-	store, err := New("/tmp/test", timeProvider)
+	cfg := config.Default()
+	cfg.Persistence.RootPath = t.TempDir()
+	journal, err := wal.New(cfg.Persistence.RootPath)
+	if err != nil {
+		t.Fatalf("Failed to create WAL: %v", err)
+	}
+	defer journal.Close()
+	store, err := New(&cfg, journal)
 	if err != nil {
 		t.Fatalf("Failed to create store: %v", err)
 	}
