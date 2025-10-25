@@ -1,0 +1,52 @@
+name: CI
+
+on:
+  push:
+    branches: [ main, master, ver1 ]
+  pull_request:
+    branches: [ main, master, ver1 ]
+
+jobs:
+  build:
+    name: Build, Lint and Test (via Taskfile)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: '1.24'
+
+      - name: Cache Go modules
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/.cache/go/pkg/mod
+          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+
+      - name: Install Task (go-task)
+        run: |
+          go install github.com/go-task/task/v3/cmd/task@latest
+          echo "$(go env GOPATH)/bin" >> $GITHUB_PATH
+
+      - name: Install deps (Taskfile)
+        run: task deps
+
+      - name: Format (Taskfile)
+        run: task fmt
+
+      - name: Lint (Taskfile)
+        run: task lint
+
+      - name: Build (Taskfile)
+        run: task build
+
+      - name: Test (Taskfile)
+        run: task test
+
+      - name: Run go vet
+        run: go vet ./...

@@ -1,4 +1,4 @@
-package persistance
+package persistence
 
 import (
 	"encoding/json"
@@ -80,7 +80,7 @@ func (m *Manifest) Save() error {
 func (m *Manifest) save() error {
 	// Ensure directory exists
 	dir := filepath.Dir(m.filePath)
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := os.MkdirAll(dir, 0750); err != nil {
 		return fmt.Errorf("failed to create manifest directory: %w", err)
 	}
 
@@ -90,8 +90,8 @@ func (m *Manifest) save() error {
 		return fmt.Errorf("failed to marshal manifest: %w", err)
 	}
 
-	// Write to file
-	if err := os.WriteFile(m.filePath, data, 0644); err != nil {
+	// Write to file with restrictive permissions
+	if err := os.WriteFile(m.filePath, data, 0600); err != nil {
 		return fmt.Errorf("failed to write manifest: %w", err)
 	}
 

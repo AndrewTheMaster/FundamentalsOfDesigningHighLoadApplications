@@ -1,0 +1,20 @@
+logger:
+  level: debug
+  json: false
+
+http-server:
+  port: 8080
+
+db:
+  memtable:
+    flush_threshold: 1024
+    flush_chan_buff_size: 3
+  persistence:
+    path: /home/vlad/Documents/Study/FundamentalsOfDesigningHighLoadApplications/data
+    sstable:
+      size_multiplier: 10
+      compact_threshold: 4
+    cache:
+      capacity: 100
+    bloom_filter:
+      fp_rate: 0.01

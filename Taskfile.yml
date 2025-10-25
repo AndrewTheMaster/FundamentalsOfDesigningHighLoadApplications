@@ -1,0 +1,99 @@
+# yaml
+version: '3'
+
+tasks:
+  build:
+    desc: "Build the application"
+    cmds:
+      - go build -o bin/lsmdb ./cmd/...
+
+  run:
+    desc: "Build and run the application"
+    deps:
+      - build
+    cmds:
+      - ./bin/lsmdb
+
+  test:
+    desc: "Run tests"
+    cmds:
+      - go test -count=1 ./...
+
+  test-coverage:
+    desc: "Run tests with coverage"
+    cmds:
+      - go test -cover ./...
+
+  clean:
+    desc: "Clean build artifacts"
+    cmds:
+      - rm -rf bin/
+      - rm -rf data/
+
+  docker-build:
+    desc: "Build Docker image"
+    cmds:
+      - docker build -t lsmdb .
+
+  docker-run:
+    desc: "Run with Docker Compose"
+    cmds:
+      - docker-compose up -d
+
+  docker-stop:
+    desc: "Stop Docker containers"
+    cmds:
+      - docker-compose down
+
+  docker-logs:
+    desc: "Show Docker logs"
+    cmds:
+      - docker-compose logs -f
+
+  dev:
+    desc: "Run in development mode"
+    cmds:
+      - go run cmd/main.go
+
+  deps:
+    desc: "Install dependencies"
+    cmds:
+      - go mod download
+      - go mod tidy
+
+  fmt:
+    desc: "Format code"
+    cmds:
+      - go fmt ./...
+
+  lint:
+    desc: "Lint code"
+    deps:
+      - lint-install
+    cmds:
+      - golangci-lint run
+
+  lint-install:
+    desc: "Install golangci-lint (via go install)"
+    cmds:
+      - go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
+      - echo "golangci-lint installed. Убедитесь, что $(go env GOPATH)/bin или $(go env GOBIN) в PATH."
+
+  help:
+    desc: "Show this help"
+    cmds:
+      - echo "Available commands:"
+      - echo "  build          - Build the application"
+      - echo "  run            - Build and run the application"
+      - echo "  test           - Run tests"
+      - echo "  test-coverage  - Run tests with coverage"
+      - echo "  clean          - Clean build artifacts"
+      - echo "  docker-build   - Build Docker image"
+      - echo "  docker-run     - Run with Docker Compose"
+      - echo "  docker-stop    - Stop Docker containers"
+      - echo "  docker-logs    - Show Docker logs"
+      - echo "  dev            - Run in development mode"
+      - echo "  deps           - Install dependencies"
+      - echo "  fmt            - Format code"
+      - echo "  lint           - Lint code"
+      - echo "  help           - Show this help"

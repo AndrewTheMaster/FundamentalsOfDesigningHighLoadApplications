@@ -6,8 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"lsmdb/pkg/listener"
 	"lsmdb/pkg/types"
+	"math"
 	"os"
 	"path/filepath"
 	"sync"
@@ -38,12 +40,17 @@ type WAL struct {
 
 // New creates a new WAL instance
 func New(dir string) (*WAL, error) {
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	// Ensure directory is a clean path and create with restrictive permissions
+	if dir == "" {
+		return nil, fmt.Errorf("empty WAL dir")
+	}
+	dir = filepath.Clean(dir)
+	if err := os.MkdirAll(dir, 0750); err != nil {
 		return nil, fmt.Errorf("failed to create WAL directory: %w", err)
 	}
 
 	filePath := filepath.Join(dir, "wal.log")
-	file, err := os.OpenFile(filePath, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0644)
+	file, err := os.OpenFile(filePath, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0600)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open WAL file: %w", err)
 	}
@@ -99,7 +106,11 @@ func (w *WAL) Replay(start types.SeqN, callback func(Entry) error) error {
 	if err != nil {
 		return fmt.Errorf("failed to open WAL for reading: %w", err)
 	}
-	defer file.Close()
+	defer func() {
+		if cerr := file.Close(); cerr != nil {
+			slog.Warn("failed to close WAL read file", "error", cerr)
+		}
+	}()
 
 	reader := bufio.NewReader(file)
 
@@ -160,7 +171,10 @@ func (w *WAL) writeEntry(entry Entry) error {
 		return err
 	}
 
-	// Write key length (4 bytes)
+	// Write key length (4 bytes) - ensure it fits into uint32
+	if len(entry.Key) > math.MaxUint32 {
+		return fmt.Errorf("key too large: %d", len(entry.Key))
+	}
 	keyLen := uint32(len(entry.Key))
 	if err := binary.Write(w.writer, binary.LittleEndian, keyLen); err != nil {
 		return err
@@ -171,7 +185,10 @@ func (w *WAL) writeEntry(entry Entry) error {
 		return err
 	}
 
-	// Write value length (4 bytes)
+	// Write value length (4 bytes) - ensure it fits into uint32
+	if len(entry.Value) > math.MaxUint32 {
+		return fmt.Errorf("value too large: %d", len(entry.Value))
+	}
 	valueLen := uint32(len(entry.Value))
 	if err := binary.Write(w.writer, binary.LittleEndian, valueLen); err != nil {
 		return err

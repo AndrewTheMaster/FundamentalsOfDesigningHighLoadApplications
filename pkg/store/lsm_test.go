@@ -2,10 +2,11 @@ package store
 
 import (
 	"fmt"
+	"lsmdb/pkg/config"
+	"lsmdb/pkg/wal"
 	"os"
 	"path/filepath"
 	"testing"
-	"time"
 )
 
 // TestLSMTreeFlow tests the complete LSM-tree data flow
@@ -13,9 +14,16 @@ func TestLSMTreeFlow(t *testing.T) {
 	// Create temporary directory
 	tempDir := t.TempDir()
 
-	// Create store
-	timeProvider := &mockTimeProvider{now: time.Now()}
-	store, err := New(tempDir, timeProvider)
+	// Создать реальный config и WAL
+	cfg := config.Default()
+	cfg.Persistence.RootPath = tempDir
+	journal, err := wal.New(cfg.Persistence.RootPath)
+	if err != nil {
+		t.Fatalf("Failed to create WAL: %v", err)
+	}
+	defer journal.Close()
+
+	store, err := New(&cfg, journal)
 	if err != nil {
 		t.Fatalf("Failed to create store: %v", err)
 	}
@@ -23,8 +31,8 @@ func TestLSMTreeFlow(t *testing.T) {
 	t.Run("MemtableOperations", func(t *testing.T) {
 		// Put data that should stay in memtable
 		for i := 0; i < 5; i++ {
-			key := fmt.Sprintf("key%d", i)
-			value := fmt.Sprintf("value%d", i)
+			key := fmtKey(i)
+			value := fmtValue(i)
 			err := store.PutString(key, value)
 			if err != nil {
 				t.Fatalf("PutString failed: %v", err)
@@ -33,8 +41,8 @@ func TestLSMTreeFlow(t *testing.T) {
 
 		// Verify data is in memtable
 		for i := 0; i < 5; i++ {
-			key := fmt.Sprintf("key%d", i)
-			expected := fmt.Sprintf("value%d", i)
+			key := fmtKey(i)
+			expected := fmtValue(i)
 			value, found, err := store.GetString(key)
 			if err != nil {
 				t.Fatalf("GetString failed: %v", err)
@@ -52,12 +60,12 @@ func TestLSMTreeFlow(t *testing.T) {
 		// Force memtable flush by exceeding threshold
 		// This is a simplified test - in real implementation,
 		// we would need to add enough data to exceed threshold
-		fmt.Println("Testing memtable flush...")
+		t.Log("Testing memtable flush...")
 
 		// Add more data to potentially trigger flush
 		for i := 5; i < 10; i++ {
-			key := fmt.Sprintf("key%d", i)
-			value := fmt.Sprintf("value%d", i)
+			key := fmtKey(i)
+			value := fmtValue(i)
 			err := store.PutString(key, value)
 			if err != nil {
 				t.Fatalf("PutString failed: %v", err)
@@ -68,8 +76,8 @@ func TestLSMTreeFlow(t *testing.T) {
 	t.Run("DataPersistence", func(t *testing.T) {
 		// Verify all data is still accessible
 		for i := 0; i < 10; i++ {
-			key := fmt.Sprintf("key%d", i)
-			expected := fmt.Sprintf("value%d", i)
+			key := fmtKey(i)
+			expected := fmtValue(i)
 			value, found, err := store.GetString(key)
 			if err != nil {
 				t.Fatalf("GetString failed: %v", err)
@@ -124,8 +132,15 @@ func TestWALFunctionality(t *testing.T) {
 	tempDir := t.TempDir()
 
 	// Create store
-	timeProvider := &mockTimeProvider{now: time.Now()}
-	store, err := New(tempDir, timeProvider)
+	cfg := config.Default()
+	cfg.Persistence.RootPath = tempDir
+	journal, err := wal.New(cfg.Persistence.RootPath)
+	if err != nil {
+		t.Fatalf("Failed to create WAL: %v", err)
+	}
+	defer journal.Close()
+
+	store, err := New(&cfg, journal)
 	if err != nil {
 		t.Fatalf("Failed to create store: %v", err)
 	}
@@ -160,8 +175,15 @@ func TestSSTableCreation(t *testing.T) {
 	tempDir := t.TempDir()
 
 	// Create store
-	timeProvider := &mockTimeProvider{now: time.Now()}
-	store, err := New(tempDir, timeProvider)
+	cfg := config.Default()
+	cfg.Persistence.RootPath = tempDir
+	journal, err := wal.New(cfg.Persistence.RootPath)
+	if err != nil {
+		t.Fatalf("Failed to create WAL: %v", err)
+	}
+	defer journal.Close()
+
+	store, err := New(&cfg, journal)
 	if err != nil {
 		t.Fatalf("Failed to create store: %v", err)
 	}
@@ -217,8 +239,15 @@ func TestCompactionBehavior(t *testing.T) {
 	tempDir := t.TempDir()
 
 	// Create store
-	timeProvider := &mockTimeProvider{now: time.Now()}
-	store, err := New(tempDir, timeProvider)
+	cfg := config.Default()
+	cfg.Persistence.RootPath = tempDir
+	journal, err := wal.New(cfg.Persistence.RootPath)
+	if err != nil {
+		t.Fatalf("Failed to create WAL: %v", err)
+	}
+	defer journal.Close()
+
+	store, err := New(&cfg, journal)
 	if err != nil {
 		t.Fatalf("Failed to create store: %v", err)
 	}
@@ -258,9 +287,9 @@ func TestCompactionBehavior(t *testing.T) {
 		t.Fatalf("Failed to read data directory: %v", err)
 	}
 
-	fmt.Printf("Data directory contains %d files:\n", len(files))
+	t.Logf("Data directory contains %d files:", len(files))
 	for _, file := range files {
-		fmt.Printf("  %s\n", file.Name())
+		t.Logf("  %s", file.Name())
 	}
 }
 
@@ -269,8 +298,15 @@ func TestConcurrentOperations(t *testing.T) {
 	tempDir := t.TempDir()
 
 	// Create store
-	timeProvider := &mockTimeProvider{now: time.Now()}
-	store, err := New(tempDir, timeProvider)
+	cfg := config.Default()
+	cfg.Persistence.RootPath = tempDir
+	journal, err := wal.New(cfg.Persistence.RootPath)
+	if err != nil {
+		t.Fatalf("Failed to create WAL: %v", err)
+	}
+	defer journal.Close()
+
+	store, err := New(&cfg, journal)
 	if err != nil {
 		t.Fatalf("Failed to create store: %v", err)
 	}
@@ -319,3 +355,7 @@ func TestConcurrentOperations(t *testing.T) {
 		}
 	}
 }
+
+// helper functions to keep formatting consistent
+func fmtKey(i int) string   { return fmt.Sprintf("key%d", i) }
+func fmtValue(i int) string { return fmt.Sprintf("value%d", i) }

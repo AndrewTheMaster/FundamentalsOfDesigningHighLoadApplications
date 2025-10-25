@@ -7,7 +7,7 @@ func newMD(op operation, valType valType) MD {
 }
 
 func (md MD) operation() operation {
-	return operation(md)
+	return operation(uint64(md) & 0xff)
 }
 
 func (md MD) valType() valType {
