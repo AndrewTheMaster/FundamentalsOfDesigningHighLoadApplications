@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"lsmdb/internal/config"
+	"lsmdb/pkg/cluster"
 	"lsmdb/pkg/rpc"
 	"lsmdb/pkg/store"
 	"os"
@@ -26,6 +27,25 @@ func main() {
 	cfg := config.Default()
 
 	fmt.Printf("LSMDB starting (Lab 3 implementation). DataDir=%s\n", cfg.Storage.DataDir)
+
+	ring := cluster.NewHashRing(100) // 100 виртуальных нод
+
+	nodes := []string{
+		"node1:8080",
+		"node2:8080",
+		"node3:8080",
+	}
+	for _, n := range nodes {
+		ring.AddNode(n)
+	}
+
+	fmt.Println("Cluster ring initialized with nodes:", ring.ListNodes())
+
+	// тест распределения ключей
+	sampleKeys := []string{"user:1", "user:2", "config:timeout", "products", "order:42"}
+	for _, k := range sampleKeys {
+		fmt.Printf("Key %-15s → %s\n", k, ring.GetNode(k))
+	}
 
 	// Create store
 	db, err := store.New(cfg.Storage.DataDir, &timeProvider{})
