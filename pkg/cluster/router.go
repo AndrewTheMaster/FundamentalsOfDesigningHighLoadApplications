@@ -3,7 +3,6 @@ package cluster
 import (
 	"context"
 	"fmt"
-	"lsmdb/pkg/store"
 )
 
 // минимальный интерфейс удалённого клиента
@@ -14,13 +13,13 @@ type Remote interface {
 	Close() error
 }
 
-// возвращает клиента для указанного target (host:port).
+// возвращает клиента для указанного target (host:port)
 type ClientFactory func(target string) (Remote, error)
 
 type Router struct {
 	LocalAddr string // текущая нода
 	Ring      *HashRing
-	DB        *store.DB
+	DB        KV
 	NewClient ClientFactory
 }
 
