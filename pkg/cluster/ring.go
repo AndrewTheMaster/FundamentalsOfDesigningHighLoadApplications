@@ -7,19 +7,25 @@ import (
 	"sync"
 )
 
+type Hash = uint32
+
 // реализует consistent hashing с виртуальными нодами.
 type HashRing struct {
 	replicas int
-	nodes    []int          // отсортированные хэши
-	nodeMap  map[int]string // хэш -> имя ноды
+	nodes    []Hash          // отсортированные хэши виртуальных нод
+	nodeMap  map[Hash]string // hash виртуальной ноды -> имя реальной ноды
 	mu       sync.RWMutex
 }
 
 func NewHashRing(replicas int) *HashRing {
 	return &HashRing{
 		replicas: replicas,
-		nodeMap:  make(map[int]string),
+		nodeMap:  make(map[Hash]string),
 	}
+}
+
+func hashKey(s string) Hash {
+	return crc32.ChecksumIEEE([]byte(s))
 }
 
 func (h *HashRing) AddNode(node string) {
@@ -27,11 +33,12 @@ func (h *HashRing) AddNode(node string) {
 	defer h.mu.Unlock()
 
 	for i := 0; i < h.replicas; i++ {
-		hash := int(crc32.ChecksumIEEE([]byte(fmt.Sprintf("%s#%d", node, i))))
+		token := fmt.Sprintf("%s#%d", node, i)
+		hash := hashKey(token)
 		h.nodes = append(h.nodes, hash)
 		h.nodeMap[hash] = node
 	}
-	sort.Ints(h.nodes)
+	sort.Slice(h.nodes, func(i, j int) bool { return h.nodes[i] < h.nodes[j] })
 }
 
 func (h *HashRing) RemoveNode(node string) {
@@ -40,30 +47,57 @@ func (h *HashRing) RemoveNode(node string) {
 
 	filtered := h.nodes[:0]
 	for _, hash := range h.nodes {
-		if h.nodeMap[hash] != node {
-			filtered = append(filtered, hash)
-		} else {
+		if h.nodeMap[hash] == node {
 			delete(h.nodeMap, hash)
+			continue
 		}
+		filtered = append(filtered, hash)
 	}
 	h.nodes = filtered
 }
 
 // имя ноды по ключу
-func (h *HashRing) GetNode(key string) string {
+func (h *HashRing) GetNode(key string) (string, bool) {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 
 	if len(h.nodes) == 0 {
-		return ""
+		return "", false
 	}
-
-	hash := int(crc32.ChecksumIEEE([]byte(key)))
-	idx := sort.Search(len(h.nodes), func(i int) bool { return h.nodes[i] >= hash })
+	hv := hashKey(key)
+	idx := sort.Search(len(h.nodes), func(i int) bool { return h.nodes[i] >= hv })
 	if idx == len(h.nodes) {
 		idx = 0
 	}
-	return h.nodeMap[h.nodes[idx]]
+	return h.nodeMap[h.nodes[idx]], true
+}
+
+// Successors — заготовка под репликацию: n последовательных уникальных реальных нод по ключу.
+func (h *HashRing) Successors(key string, n int) []string {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+
+	if len(h.nodes) == 0 || n <= 0 {
+		return nil
+	}
+	hv := hashKey(key)
+	idx := sort.Search(len(h.nodes), func(i int) bool { return h.nodes[i] >= hv })
+	if idx == len(h.nodes) {
+		idx = 0
+	}
+
+	res := make([]string, 0, n)
+	seen := make(map[string]struct{}, n)
+	for i := 0; i < len(h.nodes) && len(res) < n; i++ {
+		hh := h.nodes[(idx+i)%len(h.nodes)]
+		name := h.nodeMap[hh]
+		if _, ok := seen[name]; ok {
+			continue
+		}
+		seen[name] = struct{}{}
+		res = append(res, name)
+	}
+	return res
 }
 
 // возвращает список уникальных имён нод.
