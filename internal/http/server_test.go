@@ -1,3 +1,4 @@
+//nolint:hugeParam // test only
 package http
 
 import (

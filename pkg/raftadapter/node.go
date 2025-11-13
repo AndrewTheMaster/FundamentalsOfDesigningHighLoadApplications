@@ -21,6 +21,13 @@ type iStoreAPI interface {
 	Delete(key string) error
 }
 
+type iTransport interface {
+	Send(msg raftpb.Message) error
+	AddPeer(id uint64, addr string)
+	RemovePeer(id uint64)
+	UpdatePeer(id uint64, addr string)
+}
+
 type Node struct {
 	ID           uint64
 	Peers        map[uint64]string
@@ -29,7 +36,7 @@ type Node struct {
 	jr           *raft.MemoryStorage
 	conf         *raftpb.ConfState
 	tickInterval time.Duration
-	transport    *Transport
+	transport    iTransport
 
 	ctx  context.Context
 	stop context.CancelFunc
@@ -98,12 +105,6 @@ func (n *Node) Run(ctx context.Context) error {
 }
 
 func (n *Node) handleReady(rd raft.Ready) error {
-	//if !raft.IsEmptySnap(rd.Snapshot) {
-	//	if err := n.jr.ApplySnapshot(rd.Snapshot); err != nil {
-	//		return fmt.Errorf("apply snapshot: %w", err)
-	//	}
-	//}
-
 	if err := n.jr.Append(rd.Entries); err != nil {
 		return fmt.Errorf("append entries: %w", err)
 	}

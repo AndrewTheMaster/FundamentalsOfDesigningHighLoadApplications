@@ -200,15 +200,6 @@ func TestRemoteAPIErrorHandling(t *testing.T) {
 	// Ensure Raft config is initialized for tests
 	cfg.Raft.ID = 1
 	cfg.Raft.Peers = []config.RaftPeerConfig{{ID: 1, Address: "http://localhost:8081"}}
-	if cfg.Raft.ElectionTick == 0 {
-		cfg.Raft.ElectionTick = 10
-	}
-	if cfg.Raft.HeartbeatTick == 0 {
-		cfg.Raft.HeartbeatTick = 1
-	}
-	if cfg.Raft.MaxInflightMsgs == 0 {
-		cfg.Raft.MaxInflightMsgs = 256
-	}
 	journal, err := wal.New(cfg.Persistence.RootPath)
 	if err != nil {
 		t.Fatalf("Failed to create WAL: %v", err)

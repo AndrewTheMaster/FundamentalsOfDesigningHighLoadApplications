@@ -6,7 +6,23 @@ http-server:
   port: 8080
 
 raft:
-
+  id: 1
+  election_tick: 10
+  heartbeat_tick: 2
+  applied: 0
+  max_size_per_msg: 1048576        # 1 MB
+  max_committed_size_per_ready: 4194304 # 4 MB
+  max_uncommitted_entries_size: 10485760 # 10 MB
+  max_inflight_msgs: 250
+  check_quorum: true
+  pre_vote: true
+  peers:
+    - id: 1
+      address: http://127.0.0.1:8080
+    - id: 2
+      address: http://127.0.0.1:8081
+    - id: 3
+      address: http://127.0.0.1:8082
 
 db:
   memtable:
