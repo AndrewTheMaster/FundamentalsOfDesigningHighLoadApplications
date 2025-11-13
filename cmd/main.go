@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"lsmdb/internal/http"
+	"lsmdb/pkg/raftadapter"
 	"lsmdb/pkg/store"
 	"lsmdb/pkg/wal"
 	"os/signal"
@@ -37,9 +38,15 @@ func main() {
 		panic(err)
 	}
 
-	// Create gRPC server
+	node, err := raftadapter.NewNode(&cfg.Raft, db)
+	if err != nil {
+		slog.Error("failed to create raft node", "error", err)
+		panic(err)
+	}
+
+	// Create server
 	server := http.NewServer(
-		db,
+		node,
 		fmt.Sprintf("%d", cfg.Server.Port),
 	)
 	if err := server.Start(); err != nil {

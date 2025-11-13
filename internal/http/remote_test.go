@@ -35,9 +35,12 @@ func TestRemoteAPI(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create db: %v", err)
 	}
+	node := &fakeRaftNode{store: db}
 
 	// Create server
-	server := NewServer(db, "8081")
+	server := NewServer(node, "8081")
+	// attach DB to server before starting to avoid races (handler may be called immediately)
+	server.store = db
 	if err = server.Start(); err != nil {
 		t.Fatal(err)
 	}
@@ -45,7 +48,7 @@ func TestRemoteAPI(t *testing.T) {
 	defer server.Stop()
 
 	// wait for server start
-	time.Sleep(1 * time.Second)
+	time.Sleep(100 * time.Millisecond)
 
 	// Test data
 	testKey := "remote_test_key"
@@ -194,6 +197,9 @@ func TestRemoteAPIErrorHandling(t *testing.T) {
 	// Create store
 	cfg := config.Default()
 	cfg.Persistence.RootPath = tempDir
+	// Ensure Raft config is initialized for tests
+	cfg.Raft.ID = 1
+	cfg.Raft.Peers = []config.RaftPeerConfig{{ID: 1, Address: "http://localhost:8081"}}
 	journal, err := wal.New(cfg.Persistence.RootPath)
 	if err != nil {
 		t.Fatalf("Failed to create WAL: %v", err)
@@ -203,9 +209,10 @@ func TestRemoteAPIErrorHandling(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create db: %v", err)
 	}
+	node := &fakeRaftNode{store: db}
 
 	// Create server
-	server := NewServer(db, "8081")
+	server := NewServer(node, "8081")
 	if err = server.Start(); err != nil {
 		t.Fatal(err)
 	}

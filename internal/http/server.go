@@ -5,10 +5,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"lsmdb/pkg/raftadapter"
+	"lsmdb/pkg/store"
 	"net/http"
+	"net/url"
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"go.etcd.io/etcd/raft/v3/raftpb"
 )
 
 const (
@@ -17,15 +21,23 @@ const (
 	defaultShutdownTimeout = time.Second * 5
 )
 
-// iStoreAPI is a minimal interface used by RPC handlers. It allows using a fake store in tests.
 type iStoreAPI interface {
-	PutString(key, value string) error
 	GetString(key string) (string, bool, error)
-	Delete(key string) error
+}
+
+type iRaftNode interface {
+	IsLeader() bool
+	LeaderAddr() string
+	Execute(ctx context.Context, cmd raftadapter.Cmd) error
+	Handle(ctx context.Context, message raftpb.Message) error
+
+	Run(ctx context.Context) error
+	Stop() error
 }
 
 // Server represents the HTTP server with storage
 type Server struct {
+	node       iRaftNode
 	store      iStoreAPI
 	httpServer *http.Server
 	URL        string
@@ -33,19 +45,24 @@ type Server struct {
 }
 
 // NewServer creates a new server instance. Accepts any implementation of iStoreAPI (including *store.Store).
-func NewServer(store iStoreAPI, port string) *Server {
+func NewServer(node iRaftNode, port string) *Server {
 	if port == "" {
 		port = defaultHTTPPort
 	}
 	return &Server{
-		store: store,
-		URL:   "http://localhost:" + port,
-		addr:  ":" + port,
+		node: node,
+		URL:  "http://localhost:" + port,
+		addr: ":" + port,
 	}
 }
 
 // Start starts the server
 func (s *Server) Start() error {
+	go func() {
+		if err := s.node.Run(context.Background()); err != nil {
+			slog.Error("Raft node error", "error", err)
+		}
+	}()
 	if err := s.startHTTPServer(); err != nil {
 		return fmt.Errorf("failed to start HTTP server: %w", err)
 	}
@@ -61,6 +78,7 @@ func (s *Server) Stop() error {
 		if err := s.httpServer.Shutdown(ctx); err != nil {
 			return fmt.Errorf("failed to shutdown HTTP server: %w", err)
 		}
+		_ = s.node.Stop()
 	}
 	return nil
 }
@@ -74,6 +92,7 @@ func (s *Server) createRouter() http.Handler {
 	r.Put("/api/string", s.handlePut)
 	r.Get("/api/string", s.handleGet)
 	r.Delete("/api", s.handleDelete)
+	r.Post("/api/internal/raft", s.handleRaft)
 
 	return r
 }
@@ -103,6 +122,31 @@ func (s *Server) writeJSON(w http.ResponseWriter, status int, data interface{}) 
 	}
 }
 
+func (s *Server) redirectLeader(w http.ResponseWriter, r *http.Request) (bool, error) {
+	if !s.node.IsLeader() {
+		leaderAddr := s.node.LeaderAddr()
+		if leaderAddr == "" {
+			// leader unknown yet — don't redirect, allow local handling
+			return false, nil
+		}
+
+		// Avoid redirect loop when leaderAddr equals this server's URL
+		if leaderAddr == s.URL {
+			return false, nil
+		}
+
+		leaderURL, err := url.JoinPath(leaderAddr, r.URL.Path)
+		if err != nil {
+			s.writeJSON(w, http.StatusInternalServerError, NewErrorResponse("Failed to get leader URL"))
+			return false, fmt.Errorf("failed to join leader path: %w", err)
+		}
+
+		http.Redirect(w, r, leaderURL, http.StatusTemporaryRedirect)
+		return true, nil
+	}
+	return false, nil
+}
+
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	s.writeJSON(w, http.StatusOK, NewOKResponse())
 }
@@ -114,6 +158,13 @@ func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handlePut(w http.ResponseWriter, r *http.Request) {
+	if redirected, err := s.redirectLeader(w, r); redirected || err != nil {
+		if err != nil {
+			slog.Error("Failed to redirect to leader", "error", err)
+		}
+		return
+	}
+
 	if err := r.ParseForm(); err != nil {
 		s.writeJSON(w, http.StatusBadRequest, NewErrorResponse("Failed to parse form"))
 		return
@@ -127,7 +178,8 @@ func (s *Server) handlePut(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := s.store.PutString(key, value); err != nil {
+	cmd := raftadapter.NewCmd(store.InsertOp, []byte(key), []byte(value))
+	if err := s.node.Execute(r.Context(), cmd); err != nil {
 		s.writeJSON(w, http.StatusInternalServerError, NewErrorResponse(err.Error()))
 		return
 	}
@@ -157,15 +209,36 @@ func (s *Server) handleGet(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
+	if redirected, err := s.redirectLeader(w, r); redirected || err != nil {
+		if err != nil {
+			slog.Error("Failed to redirect to leader", "error", err)
+		}
+		return
+	}
+
 	key := r.URL.Query().Get("key")
 	if key == "" {
 		s.writeJSON(w, http.StatusBadRequest, NewErrorResponse("Missing key"))
 		return
 	}
 
-	if err := s.store.Delete(key); err != nil {
+	cmd := raftadapter.NewCmd(store.DeleteOp, []byte(key), nil)
+	if err := s.node.Execute(r.Context(), cmd); err != nil {
 		s.writeJSON(w, http.StatusInternalServerError, NewErrorResponse(err.Error()))
 		return
+	}
+
+	s.writeJSON(w, http.StatusOK, NewSuccessResponse())
+}
+
+func (s *Server) handleRaft(w http.ResponseWriter, r *http.Request) {
+	dec := json.NewDecoder(r.Body)
+	var msg raftpb.Message
+	if err := dec.Decode(&msg); err != nil {
+		s.writeJSON(w, http.StatusInternalServerError, NewErrorResponse(err.Error()))
+	}
+	if err := s.node.Handle(r.Context(), msg); err != nil {
+		s.writeJSON(w, http.StatusInternalServerError, NewErrorResponse(err.Error()))
 	}
 
 	s.writeJSON(w, http.StatusOK, NewSuccessResponse())

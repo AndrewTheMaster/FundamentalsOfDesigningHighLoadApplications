@@ -108,10 +108,10 @@ func (s *Store) Put(key string, value any) error {
 }
 
 func (s *Store) PutString(key string, value string) error {
-	return s.put(key, String(value), insertOp)
+	return s.put(key, String(value), InsertOp)
 }
 
-func (s *Store) put(key string, val value, op operation) error {
+func (s *Store) put(key string, val value, op Operation) error {
 	entryID := s.seqN.Next()
 	md := newMD(op, val.typeOf())
 
@@ -141,7 +141,7 @@ func (s *Store) Get(key string) (storable, bool, error) {
 	item, ok := s.mt.Get(keyBytes)
 	if ok {
 		md := MD(item.Meta)
-		if md.operation() == deleteOp {
+		if md.operation() == DeleteOp {
 			return nil, false, nil // deleted
 		}
 
@@ -160,7 +160,7 @@ func (s *Store) Get(key string) (storable, bool, error) {
 	}
 
 	md := MD(sstableItem.Meta)
-	if md.operation() == deleteOp {
+	if md.operation() == DeleteOp {
 		return nil, false, nil // deleted
 	}
 
@@ -183,7 +183,7 @@ func (s *Store) GetString(key string) (string, bool, error) {
 }
 
 func (s *Store) Delete(key string) error {
-	return s.put(key, tombstone{}, deleteOp)
+	return s.put(key, tombstone{}, DeleteOp)
 }
 
 func (s *Store) Close() {

@@ -1,6 +1,8 @@
 package config
 
-import "time"
+import (
+	"time"
+)
 
 // Config - корневая структура конфигурации приложения
 // yaml и validate теги для парсинга и валидации
@@ -8,7 +10,28 @@ import "time"
 type Config struct {
 	Logger LoggerConfig `yaml:"logger" validate:"required"`
 	Server ServerConfig `yaml:"http-server" validate:"required"`
+	Raft   RaftConfig   `yaml:"raft" validate:"required"`
 	DB     `yaml:"db" validate:"required"`
+}
+
+type RaftConfig struct {
+	ID                        uint64 `yaml:"id" validate:"required,min=1"`
+	ElectionTick              int    `yaml:"election_tick,omitempty"`
+	HeartbeatTick             int    `yaml:"heartbeat_tick,omitempty"`
+	Applied                   uint64 `yaml:"applied,omitempty"`
+	MaxSizePerMsg             uint64 `yaml:"max_size_per_msg,omitempty"`
+	MaxCommittedSizePerReady  uint64 `yaml:"max_committed_size_per_ready,omitempty"`
+	MaxUncommittedEntriesSize uint64 `yaml:"max_uncommitted_entries_size,omitempty"`
+	MaxInflightMsgs           int    `yaml:"max_inflight_msgs,omitempty"`
+	CheckQuorum               bool   `yaml:"check_quorum,omitempty"`
+	PreVote                   bool   `yaml:"pre_vote,omitempty"`
+
+	Peers []RaftPeerConfig `yaml:"peers" validate:"required,dive"`
+}
+
+type RaftPeerConfig struct {
+	ID      uint64 `yaml:"id" validate:"required,min=1"`
+	Address string `yaml:"address"`
 }
 
 type ServerConfig struct {

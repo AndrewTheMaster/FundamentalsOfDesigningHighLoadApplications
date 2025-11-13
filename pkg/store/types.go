@@ -8,8 +8,8 @@ import (
 )
 
 const (
-	insertOp operation = iota
-	deleteOp
+	InsertOp Operation = iota
+	DeleteOp
 )
 
 const (
@@ -33,7 +33,7 @@ var (
 	}
 )
 
-type operation uint8
+type Operation uint8
 
 type valType uint8
 

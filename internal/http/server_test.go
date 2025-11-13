@@ -1,6 +1,8 @@
+//nolint:hugeParam // test only
 package http
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -8,6 +10,11 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"lsmdb/pkg/raftadapter"
+	"lsmdb/pkg/store"
+
+	"go.etcd.io/etcd/raft/v3/raftpb"
 )
 
 // simple in-memory fake store implementing iStoreAPI
@@ -41,6 +48,36 @@ func (f *fakeStore) Delete(key string) error {
 	return nil
 }
 
+type iTestStoreAPI interface {
+	PutString(key, value string) error
+	GetString(key string) (string, bool, error)
+	Delete(key string) error
+}
+
+// fakeRaftNode implements iRaftNode minimally for tests and can apply to a provided store
+type fakeRaftNode struct {
+	store iTestStoreAPI
+}
+
+func (n *fakeRaftNode) IsLeader() bool     { return true }
+func (n *fakeRaftNode) LeaderAddr() string { return "" }
+func (n *fakeRaftNode) Execute(ctx context.Context, cmd raftadapter.Cmd) error {
+	switch cmd.Op {
+	case store.InsertOp:
+		if n.store != nil {
+			return n.store.PutString(string(cmd.Key), string(cmd.Value))
+		}
+	case store.DeleteOp:
+		if n.store != nil {
+			return n.store.Delete(string(cmd.Key))
+		}
+	}
+	return nil
+}
+func (n *fakeRaftNode) Handle(ctx context.Context, message raftpb.Message) error { return nil }
+func (n *fakeRaftNode) Run(ctx context.Context) error                            { return nil }
+func (n *fakeRaftNode) Stop() error                                              { return nil }
+
 func decodeResp(t *testing.T, rr *httptest.ResponseRecorder) Response {
 	t.Helper()
 	var resp Response
@@ -51,7 +88,10 @@ func decodeResp(t *testing.T, rr *httptest.ResponseRecorder) Response {
 }
 
 func TestHealthHandler(t *testing.T) {
-	s := NewServer(newFakeStore(), "")
+	node := &fakeRaftNode{}
+	s := NewServer(node, "")
+	// provide store for GET handler
+	s.store = newFakeStore()
 	req := httptest.NewRequest(http.MethodGet, "/health", nil)
 	rr := httptest.NewRecorder()
 
@@ -69,7 +109,10 @@ func TestHealthHandler(t *testing.T) {
 
 func TestPutGetDeleteFlow(t *testing.T) {
 	store := newFakeStore()
-	s := NewServer(store, "")
+	node := &fakeRaftNode{store: store}
+	s := NewServer(node, "")
+	// attach store to server so GET works
+	s.store = store
 
 	// PUT
 	form := url.Values{}
@@ -123,7 +166,10 @@ func TestPutGetDeleteFlow(t *testing.T) {
 }
 
 func TestMissingParamsAndMethodNotAllowed(t *testing.T) {
-	s := NewServer(newFakeStore(), "")
+	node := &fakeRaftNode{}
+	s := NewServer(node, "")
+	// attach store for GET
+	s.store = newFakeStore()
 
 	// PUT missing params
 	req := httptest.NewRequest(http.MethodPut, "/api/string", strings.NewReader(""))

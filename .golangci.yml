@@ -37,12 +37,8 @@ linters-settings:
     severity: warning
 
   gocritic:
-    # Рекомендуется НЕ приводить проверку, которая уже включена по умолчанию.
-    # Добавляй только те, которые не включены: пример ниже — убрать дубли.
-    enabled-checks:
+    disabled-checks:
       - hugeParam
-    # disabled-checks:
-    #   - someCheckYouDontWant
 
   misspell:
     locale: US
