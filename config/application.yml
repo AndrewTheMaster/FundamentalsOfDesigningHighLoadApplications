@@ -5,6 +5,9 @@ logger:
 http-server:
   port: 8080
 
+raft:
+
+
 db:
   memtable:
     flush_threshold: 1024
