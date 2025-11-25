@@ -1,11 +1,12 @@
 package cluster
 
 import (
-	"context"
 	"fmt"
 	"sync"
 	"testing"
 )
+
+// ====== фейки для локального KV и удалённых клиентов ======
 
 type fakeKV struct {
 	mu   sync.Mutex
@@ -16,7 +17,7 @@ type fakeKV struct {
 }
 
 func newFakeKV() *fakeKV {
-	return &fakeKV{data: map[string]string{}}
+	return &fakeKV{data: make(map[string]string)}
 }
 
 func (f *fakeKV) PutString(k, v string) error {
@@ -26,6 +27,7 @@ func (f *fakeKV) PutString(k, v string) error {
 	f.puts++
 	return nil
 }
+
 func (f *fakeKV) GetString(k string) (string, bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -33,6 +35,7 @@ func (f *fakeKV) GetString(k string) (string, bool, error) {
 	v, ok := f.data[k]
 	return v, ok, nil
 }
+
 func (f *fakeKV) Delete(k string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -41,36 +44,44 @@ func (f *fakeKV) Delete(k string) error {
 	return nil
 }
 
+// fakeRemote имитирует удалённый Remote-клиент
 type fakeRemote struct {
-	target string
-	puts   int
-	gets   int
-	dels   int
-	store  map[string]string
+	mu    sync.Mutex
+	store map[string]string
+	puts  int
+	gets  int
+	dels  int
 }
 
-func newFakeRemote(target string) *fakeRemote {
-	return &fakeRemote{target: target, store: map[string]string{}}
+func newFakeRemote() *fakeRemote {
+	return &fakeRemote{store: make(map[string]string)}
 }
-func (r *fakeRemote) Put(ctx context.Context, k, v string) error {
+
+func (r *fakeRemote) PutString(k, v string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	r.store[k] = v
 	r.puts++
 	return nil
 }
-func (r *fakeRemote) Get(ctx context.Context, k string) (string, bool, error) {
+
+func (r *fakeRemote) GetString(k string) (string, bool, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	v, ok := r.store[k]
 	r.gets++
 	return v, ok, nil
 }
-func (r *fakeRemote) Delete(ctx context.Context, k string) error {
+
+func (r *fakeRemote) Delete(k string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	delete(r.store, k)
 	r.dels++
 	return nil
 }
-func (r *fakeRemote) Close() error {
-	return nil
-}
 
+// findKeyForOwner — подбирает ключ, который по Ring.GetNode попадает на нужную ноду
 func findKeyForOwner(r *HashRing, owner string) string {
 	for i := 0; i < 1_000_000; i++ {
 		k := fmt.Sprintf("k-%d", i)
@@ -81,26 +92,60 @@ func findKeyForOwner(r *HashRing, owner string) string {
 	return ""
 }
 
-func TestRouter_LocalVsRemoteRouting(t *testing.T) {
-	// кольцо из 3 нод
+func TestRouter_RoutesLocalAndRemote(t *testing.T) {
+	// 1. Строим кольцо из трёх нод
 	ring := NewHashRing(128)
 	nodes := []string{"node1:8080", "node2:8080", "node3:8080"}
 	for _, n := range nodes {
 		ring.AddNode(n)
 	}
 
-	// текущая нода — node1
 	local := "node1:8080"
 
+	localKey := findKeyForOwner(ring, local)
+	if localKey == "" {
+		t.Fatal("failed to find key for local node")
+	}
+
+	node2Key := findKeyForOwner(ring, "node2:8080")
+	if node2Key == "" {
+		t.Fatal("failed to find key for node2")
+	}
+
+	node3Key := findKeyForOwner(ring, "node3:8080")
+	if node3Key == "" {
+		t.Fatal("failed to find key for node3")
+	}
+
+	routerLocal := &Router{
+		LocalAddr: local,
+		Ring:      ring,
+	}
+	for expectedNode, key := range map[string]string{
+		local:        localKey,
+		"node2:8080": node2Key,
+		"node3:8080": node3Key,
+	} {
+		got, err := routerLocal.owner(key)
+		if err != nil {
+			t.Fatalf("owner(%q) error: %v", key, err)
+		}
+		if got != expectedNode {
+			t.Fatalf("owner(%q) = %s, want %s", key, got, expectedNode)
+		}
+	}
+
+	// локальное KV + фабрика Remote-клиентов
 	localKV := newFakeKV()
 	remotes := map[string]*fakeRemote{}
+
 	factory := func(target string) (Remote, error) {
-		if fr, ok := remotes[target]; ok {
-			return fr, nil
+		if r, ok := remotes[target]; ok {
+			return r, nil
 		}
-		fr := newFakeRemote(target)
-		remotes[target] = fr
-		return fr, nil
+		r := newFakeRemote()
+		remotes[target] = r
+		return r, nil
 	}
 
 	router := &Router{
@@ -110,47 +155,68 @@ func TestRouter_LocalVsRemoteRouting(t *testing.T) {
 		NewClient: factory,
 	}
 
-	ctx := context.Background()
-    // ключ, чей владелец локальный
-	localKey := findKeyForOwner(ring, local)
-	if localKey == "" {
-		t.Fatal("failed to find local key")
+	// один ключ — локально, два — на чужие ноды
+	if err := router.PutString(localKey, "L"); err != nil {
+		t.Fatalf("PutString(localKey) error: %v", err)
 	}
-    // ключ, который уводит на node2
-	remoteKey := findKeyForOwner(ring, "node2:8080")
-	if remoteKey == "" {
-		t.Fatal("failed to find remote key for node2")
+	if err := router.PutString(node2Key, "V2"); err != nil {
+		t.Fatalf("PutString(node2Key) error: %v", err)
 	}
-	// --- local ---
-	if err := router.Put(ctx, localKey, "L"); err != nil {
-		t.Fatal(err)
-	}
-	if v, ok, err := router.Get(ctx, localKey); err != nil || !ok || v != "L" {
-		t.Fatalf("local get mismatch: v=%q ok=%v err=%v", v, ok, err)
-	}
-	if err := router.Delete(ctx, localKey); err != nil {
-		t.Fatal(err)
-	}
-	if _, ok, _ := router.Get(ctx, localKey); ok {
-		t.Fatalf("local key still exists after delete")
-	}
-	if localKV.puts == 0 || localKV.gets == 0 || localKV.dels == 0 {
-		t.Fatalf("local KV counters not incremented: puts=%d gets=%d dels=%d", localKV.puts, localKV.gets, localKV.dels)
-	}
-	// --- remote (node2) ---
-	if err := router.Put(ctx, remoteKey, "R"); err != nil {
-		t.Fatal(err)
-	}
-	v, ok, err := router.Get(ctx, remoteKey)
-	if err != nil || !ok || v != "R" {
-		t.Fatalf("remote get mismatch: v=%q ok=%v err=%v", v, ok, err)
-	}
-	if err := router.Delete(ctx, remoteKey); err != nil {
-		t.Fatal(err)
+	if err := router.PutString(node3Key, "V3"); err != nil {
+		t.Fatalf("PutString(node3Key) error: %v", err)
 	}
 
-	fr := remotes["node2:8080"]
-	if fr == nil || fr.puts == 0 || fr.gets == 0 || fr.dels == 0 {
-		t.Fatalf("remote client for node2 not used as expected")
+	// локальный key ушёл в локальное KV
+	if v, ok, err := router.GetString(localKey); err != nil || !ok || v != "L" {
+		t.Fatalf("GetString(localKey) = %q, %v, %v; want L, true, nil", v, ok, err)
+	}
+	if localKV.puts != 1 || localKV.gets == 0 {
+		t.Fatalf("localKV counters: puts=%d gets=%d, want puts=1 & gets>0", localKV.puts, localKV.gets)
+	}
+
+	// remote ключ для node2 ушёл через remote-клиента node2:8080
+	r2 := remotes["node2:8080"]
+	if r2 == nil {
+		t.Fatalf("no remote client created for node2:8080")
+	}
+	if v, ok, err := router.GetString(node2Key); err != nil || !ok || v != "V2" {
+		t.Fatalf("GetString(node2Key) = %q, %v, %v; want V2, true, nil", v, ok, err)
+	}
+	if r2.puts != 1 || r2.gets == 0 {
+		t.Fatalf("remote(node2) counters: puts=%d gets=%d, want puts=1 & gets>0", r2.puts, r2.gets)
+	}
+
+	// remote-клиента для node3
+	r3 := remotes["node3:8080"]
+	if r3 == nil {
+		t.Fatalf("no remote client created for node3:8080")
+	}
+	if v, ok, err := router.GetString(node3Key); err != nil || !ok || v != "V3" {
+		t.Fatalf("GetString(node3Key) = %q, %v, %v; want V3, true, nil", v, ok, err)
+	}
+	if r3.puts != 1 || r3.gets == 0 {
+		t.Fatalf("remote(node3) counters: puts=%d gets=%d, want puts=1 & gets>0", r3.puts, r3.gets)
+	}
+
+	// Delete и что он идёт туда же, куда и запись
+	if err := router.Delete(localKey); err != nil {
+		t.Fatalf("Delete(localKey) error: %v", err)
+	}
+	if _, ok, _ := router.GetString(localKey); ok {
+		t.Fatalf("localKey still exists after delete")
+	}
+
+	if err := router.Delete(node2Key); err != nil {
+		t.Fatalf("Delete(node2Key) error: %v", err)
+	}
+	if _, ok, _ := router.GetString(node2Key); ok {
+		t.Fatalf("node2Key still exists after delete")
+	}
+
+	if err := router.Delete(node3Key); err != nil {
+		t.Fatalf("Delete(node3Key) error: %v", err)
+	}
+	if _, ok, _ := router.GetString(node3Key); ok {
+		t.Fatalf("node3Key still exists after delete")
 	}
 }

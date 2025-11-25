@@ -3,22 +3,27 @@ package rpc
 import (
 	"context"
 	"fmt"
-	"lsmdb/pkg/store"
 	"net/http"
 )
 
+type KV interface {
+	PutString(key, value string) error
+	GetString(key string) (string, bool, error)
+	Delete(key string) error
+}
+
 // Server represents the HTTP server
 type Server struct {
-	store      *store.Store
+	kv         KV
 	httpServer *http.Server
 	port       string
 }
 
 // NewServer creates a new server
-func NewServer(store *store.Store, port string) *Server {
+func NewServer(kv KV, port string) *Server {
 	return &Server{
-		store: store,
-		port:  port,
+		kv:   kv,
+		port: port,
 	}
 }
 
@@ -63,7 +68,7 @@ func (s *Server) createHTTPHandler() http.Handler {
 			return
 		}
 
-		err := s.store.PutString(key, value)
+		err := s.kv.PutString(key, value)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -86,7 +91,7 @@ func (s *Server) createHTTPHandler() http.Handler {
 			return
 		}
 
-		value, found, err := s.store.GetString(key)
+		value, found, err := s.kv.GetString(key)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -114,7 +119,7 @@ func (s *Server) createHTTPHandler() http.Handler {
 			return
 		}
 
-		err := s.store.Delete(key)
+		err := s.kv.Delete(key)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -139,7 +144,7 @@ func (s *Server) startHTTPServer() error {
 	mux := s.createHTTPHandler()
 
 	s.httpServer = &http.Server{
-		Addr:    ":8081",
+		Addr:    ":" + s.port,
 		Handler: mux,
 	}
 
