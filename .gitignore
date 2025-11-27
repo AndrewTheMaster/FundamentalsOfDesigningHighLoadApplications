@@ -19,5 +19,15 @@ bin/
 .DS_Store
 
 # Local data
-/data/
-/tmp/ 
+data/
+tmp/
+
+# Large local datasets and lab artifacts
+archive (1)/
+archive (2)/
+bench-results/
+benchdata/
+docs/images/
+docs/lab4_report.md
+cmd/lsmbench/
+prev lab.txt

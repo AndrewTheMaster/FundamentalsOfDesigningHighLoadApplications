@@ -81,6 +81,40 @@ func (r *fakeRemote) Delete(k string) error {
 	return nil
 }
 
+type scriptedRemote struct {
+	*fakeRemote
+	fail  bool
+	calls struct {
+		get int
+		put int
+		del int
+	}
+}
+
+func (r *scriptedRemote) PutString(k, v string) error {
+	r.calls.put++
+	if r.fail {
+		return fmt.Errorf("remote unavailable")
+	}
+	return r.fakeRemote.PutString(k, v)
+}
+
+func (r *scriptedRemote) GetString(k string) (string, bool, error) {
+	r.calls.get++
+	if r.fail {
+		return "", false, fmt.Errorf("remote unavailable")
+	}
+	return r.fakeRemote.GetString(k)
+}
+
+func (r *scriptedRemote) Delete(k string) error {
+	r.calls.del++
+	if r.fail {
+		return fmt.Errorf("remote unavailable")
+	}
+	return r.fakeRemote.Delete(k)
+}
+
 // findKeyForOwner — подбирает ключ, который по Ring.GetNode попадает на нужную ноду
 func findKeyForOwner(r *HashRing, owner string) string {
 	for i := 0; i < 1_000_000; i++ {
@@ -153,6 +187,8 @@ func TestRouter_RoutesLocalAndRemote(t *testing.T) {
 		Ring:      ring,
 		DB:        localKV,
 		NewClient: factory,
+		// этот тест проверяет базовый routing без репликации
+		ReplicationFactor: 1,
 	}
 
 	// один ключ — локально, два — на чужие ноды
@@ -218,5 +254,58 @@ func TestRouter_RoutesLocalAndRemote(t *testing.T) {
 	}
 	if _, ok, _ := router.GetString(node3Key); ok {
 		t.Fatalf("node3Key still exists after delete")
+	}
+}
+
+func TestRouter_ReplicatedGetFallback(t *testing.T) {
+	ring := NewHashRing(128)
+	nodes := []string{"node1:8080", "node2:8080", "node3:8080"}
+	for _, n := range nodes {
+		ring.AddNode(n)
+	}
+
+	key := findKeyForOwner(ring, "node2:8080")
+	if key == "" {
+		t.Fatal("failed to pick key for node2")
+	}
+
+	localKV := newFakeKV()
+	remotes := map[string]*scriptedRemote{
+		"node2:8080": {fakeRemote: newFakeRemote(), fail: true},
+		"node3:8080": {fakeRemote: newFakeRemote(), fail: false},
+	}
+	remotes["node3:8080"].store[key] = "value"
+
+	factory := func(target string) (Remote, error) {
+		if r, ok := remotes[target]; ok {
+			return r, nil
+		}
+		return nil, fmt.Errorf("unexpected target %s", target)
+	}
+
+	router := &Router{
+		LocalAddr:         "node1:8080",
+		Ring:              ring,
+		DB:                localKV,
+		NewClient:         factory,
+		ReplicationFactor: 2,
+	}
+
+	value, ok, err := router.GetString(key)
+	if err != nil {
+		t.Fatalf("GetString returned error: %v", err)
+	}
+	if !ok {
+		t.Fatalf("expected key to be found via fallback")
+	}
+	if value != "value" {
+		t.Fatalf("value mismatch: got %q", value)
+	}
+
+	if remotes["node2:8080"].calls.get == 0 {
+		t.Fatalf("expected router to attempt node2 before fallback")
+	}
+	if remotes["node3:8080"].calls.get == 0 {
+		t.Fatalf("expected fallback remote to be queried")
 	}
 }

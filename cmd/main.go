@@ -7,8 +7,11 @@ import (
 	"lsmdb/pkg/cluster"
 	"lsmdb/pkg/rpc"
 	"lsmdb/pkg/store"
+	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
+	"sync"
 	"syscall"
 	"time"
 )
@@ -39,6 +42,9 @@ func main() {
 	}
 	fmt.Println("Cluster ring initialized with nodes:", ring.ListNodes())
 
+	replicationFactor := resolveReplicationFactor()
+	fmt.Printf("Router replication factor: %d\n", replicationFactor)
+
 	// Create local store
 	db, err := store.New(cfg.Storage.DataDir, &timeProvider{})
 	if err != nil {
@@ -47,9 +53,10 @@ func main() {
 
 	// Create remote store
 	router := &cluster.Router{
-		LocalAddr: string(clusterCfg.Local), // тоже строка
-		Ring:      ring,
-		DB:        db,
+		LocalAddr:         string(clusterCfg.Local), // тоже строка
+		Ring:              ring,
+		DB:                db,
+		ReplicationFactor: replicationFactor,
 		NewClient: func(target string) (cluster.Remote, error) {
 			baseURL := "http://" + target
 			return rpc.NewRemoteStore(baseURL), nil
@@ -58,6 +65,12 @@ func main() {
 
 	// Create gRPC server
 	server := rpc.NewServer(router, "8080")
+
+	var peerAddrs []string
+	for _, peer := range clusterCfg.Peers {
+		peerAddrs = append(peerAddrs, string(peer))
+	}
+	startHealthMonitor(ctx, ring, peerAddrs, string(clusterCfg.Local))
 
 	// Start server
 	if err := server.Start(); err != nil {
@@ -129,4 +142,92 @@ func main() {
 
 	fmt.Println("LSMDB stopped")
 	os.Exit(0)
+}
+
+func resolveReplicationFactor() int {
+	const defaultFactor = 2
+	if raw := os.Getenv("LSMDB_REPLICATION_FACTOR"); raw != "" {
+		if val, err := strconv.Atoi(raw); err == nil && val > 0 {
+			return val
+		}
+	}
+	return defaultFactor
+}
+
+type nodeHealthTracker struct {
+	mu    sync.Mutex
+	alive map[string]bool
+}
+
+func startHealthMonitor(ctx context.Context, ring *cluster.HashRing, peers []string, local string) {
+	if len(peers) == 0 {
+		return
+	}
+
+	tracker := &nodeHealthTracker{
+		alive: make(map[string]bool, len(peers)),
+	}
+	for _, peer := range peers {
+		if peer == local {
+			continue
+		}
+		tracker.alive[peer] = true
+	}
+
+	client := &http.Client{Timeout: 2 * time.Second}
+	ticker := time.NewTicker(3 * time.Second)
+
+	go func() {
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				for _, peer := range peers {
+					if peer == local {
+						continue
+					}
+					healthy := pingPeer(client, peer)
+					tracker.update(peer, healthy, ring)
+				}
+			}
+		}
+	}()
+}
+
+func pingPeer(client *http.Client, peer string) bool {
+	resp, err := client.Get(fmt.Sprintf("http://%s/health", peer))
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+	return resp.StatusCode == http.StatusOK
+}
+
+func (t *nodeHealthTracker) update(node string, healthy bool, ring *cluster.HashRing) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	current, ok := t.alive[node]
+	if !ok {
+		t.alive[node] = healthy
+		if healthy {
+			ring.AddNode(node)
+			fmt.Printf("[health] node %s added to ring\n", node)
+		}
+		return
+	}
+	if current == healthy {
+		return
+	}
+
+	t.alive[node] = healthy
+	if healthy {
+		ring.AddNode(node)
+		fmt.Printf("[health] node %s recovered, added back to ring\n", node)
+	} else {
+		ring.RemoveNode(node)
+		fmt.Printf("[health] node %s removed from ring (unhealthy)\n", node)
+	}
 }

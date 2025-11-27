@@ -7,11 +7,16 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 )
 
 // RemoteStore представляет клиент для работы с удаленным хранилищем через HTTP
 type RemoteStore struct {
 	baseURL string
+}
+
+var httpClient = &http.Client{
+	Timeout: 2 * time.Second,
 }
 
 // Response представляет ответ от сервера
@@ -30,9 +35,14 @@ func (s *RemoteStore) PutString(key, value string) error {
 	data.Set("key", key)
 	data.Set("value", value)
 
-	resp, err := http.Post(s.baseURL+"/api/put",
-		"application/x-www-form-urlencoded",
-		strings.NewReader(data.Encode()))
+	req, err := http.NewRequest(http.MethodPost, s.baseURL+"/api/put", strings.NewReader(data.Encode()))
+	if err != nil {
+		return fmt.Errorf("failed to create PUT request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("X-LSMDB-Replica", "1")
+
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("failed to PUT: %w", err)
 	}
@@ -48,7 +58,7 @@ func (s *RemoteStore) PutString(key, value string) error {
 
 // GetString получает строковое значение по ключу
 func (s *RemoteStore) GetString(key string) (string, bool, error) {
-	resp, err := http.Get(fmt.Sprintf("%s/api/get?key=%s", s.baseURL, url.QueryEscape(key)))
+	resp, err := httpClient.Get(fmt.Sprintf("%s/api/get?key=%s", s.baseURL, url.QueryEscape(key)))
 	if err != nil {
 		return "", false, fmt.Errorf("failed to GET: %w", err)
 	}
@@ -79,14 +89,13 @@ func (s *RemoteStore) GetString(key string) (string, bool, error) {
 
 // Delete удаляет значение по ключу
 func (s *RemoteStore) Delete(key string) error {
-	req, err := http.NewRequest(http.MethodDelete,
-		fmt.Sprintf("%s/api/delete?key=%s", s.baseURL, url.QueryEscape(key)),
-		nil)
+	req, err := http.NewRequest(http.MethodDelete, fmt.Sprintf("%s/api/delete?key=%s", s.baseURL, url.QueryEscape(key)), nil)
 	if err != nil {
 		return fmt.Errorf("failed to create DELETE request: %w", err)
 	}
+	req.Header.Set("X-LSMDB-Replica", "1")
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("failed to DELETE: %w", err)
 	}
