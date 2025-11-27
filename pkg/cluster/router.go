@@ -19,6 +19,9 @@ type Router struct {
 	Ring      *HashRing
 	DB        KV
 	NewClient ClientFactory
+	// ReplicationFactor определяет, сколько уникальных нод должны хранить ключ.
+	// Если 0, используется значение по умолчанию (1).
+	ReplicationFactor int
 }
 
 func (r *Router) owner(key string) (string, error) {
@@ -38,65 +41,156 @@ func (r *Router) log(method, key, target string, local bool) {
 	fmt.Printf("[router] %-6s key=%s → %s (%s)\n", method, key, target, where)
 }
 
+func (r *Router) replicationFactor() int {
+	if r.ReplicationFactor <= 0 {
+		return 1
+	}
+	return r.ReplicationFactor
+}
+
+func (r *Router) targetsFor(key string) ([]string, error) {
+	targets := r.Ring.Successors(key, r.replicationFactor())
+	if len(targets) == 0 {
+		node, err := r.owner(key)
+		if err != nil {
+			return nil, err
+		}
+		targets = []string{node}
+	}
+
+	// стараемся сначала обращаться к локальной ноде
+	if r.LocalAddr != "" {
+		for i, t := range targets {
+			if t == r.LocalAddr && i != 0 {
+				targets[0], targets[i] = targets[i], targets[0]
+				break
+			}
+		}
+	}
+
+	return targets, nil
+}
+
 func (r *Router) PutString(key, value string) error {
-	target, err := r.owner(key)
+	targets, err := r.targetsFor(key)
 	if err != nil {
 		return err
 	}
 
-	local := target == r.LocalAddr
-	r.log("PUT", key, target, local)
+	var firstErr error
+	successes := 0
 
-	if local {
-		return r.DB.PutString(key, value)
+	for _, target := range targets {
+		local := target == r.LocalAddr
+		r.log("PUT", key, target, local)
+
+		var putErr error
+		if local {
+			putErr = r.DB.PutString(key, value)
+		} else {
+			cl, err := r.NewClient(target)
+			if err != nil {
+				putErr = fmt.Errorf("router: create client: %w", err)
+			} else {
+				putErr = cl.PutString(key, value)
+			}
+		}
+
+		if putErr != nil {
+			if firstErr == nil {
+				firstErr = putErr
+			}
+			continue
+		}
+		successes++
 	}
 
-	cl, err := r.NewClient(target)
-	if err != nil {
-		return fmt.Errorf("router: create client: %w", err)
+	if successes == 0 && firstErr != nil {
+		return firstErr
 	}
-
-	return cl.PutString(key, value)
+	return nil
 }
 
 func (r *Router) GetString(key string) (string, bool, error) {
-	target, err := r.owner(key)
+	targets, err := r.targetsFor(key)
 	if err != nil {
 		return "", false, err
 	}
 
-	local := target == r.LocalAddr
-	r.log("GET", key, target, local)
+	var lastErr error
+	for _, target := range targets {
+		local := target == r.LocalAddr
+		r.log("GET", key, target, local)
 
-	if local {
-		return r.DB.GetString(key)
+		var (
+			value  string
+			found  bool
+			getErr error
+		)
+
+		if local {
+			value, found, getErr = r.DB.GetString(key)
+		} else {
+			cl, err := r.NewClient(target)
+			if err != nil {
+				getErr = fmt.Errorf("router: create client: %w", err)
+			} else {
+				value, found, getErr = cl.GetString(key)
+			}
+		}
+
+		if getErr != nil {
+			lastErr = getErr
+			continue
+		}
+
+		if found {
+			return value, true, nil
+		}
 	}
 
-	cl, err := r.NewClient(target)
-	if err != nil {
-		return "", false, fmt.Errorf("router: create client: %w", err)
-	}
-
-	return cl.GetString(key)
+	return "", false, lastErr
 }
 
 func (r *Router) Delete(key string) error {
-	target, err := r.owner(key)
+	targets, err := r.targetsFor(key)
 	if err != nil {
 		return err
 	}
 
-	local := target == r.LocalAddr
-	r.log("DELETE", key, target, local)
+	var firstErr error
+	for _, target := range targets {
+		local := target == r.LocalAddr
+		r.log("DELETE", key, target, local)
 
-	if local {
-		return r.DB.Delete(key)
+		var delErr error
+		if local {
+			delErr = r.DB.Delete(key)
+		} else {
+			cl, err := r.NewClient(target)
+			if err != nil {
+				delErr = fmt.Errorf("router: create client: %w", err)
+			} else {
+				delErr = cl.Delete(key)
+			}
+		}
+
+		if delErr != nil && firstErr == nil {
+			firstErr = delErr
+		}
 	}
 
-	cl, err := r.NewClient(target)
-	if err != nil {
-		return fmt.Errorf("router: create client: %w", err)
-	}
+	return firstErr
+}
 
-	return cl.Delete(key)
+// PutReplica сохраняет значение только на локальной ноде (без маршрутизации).
+func (r *Router) PutReplica(key, value string) error {
+	r.log("PUT*", key, r.LocalAddr, true)
+	return r.DB.PutString(key, value)
+}
+
+// DeleteReplica удаляет значение только на локальной ноде (без маршрутизации).
+func (r *Router) DeleteReplica(key string) error {
+	r.log("DEL*", key, r.LocalAddr, true)
+	return r.DB.Delete(key)
 }

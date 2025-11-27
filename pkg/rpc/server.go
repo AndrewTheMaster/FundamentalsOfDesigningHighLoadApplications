@@ -12,6 +12,11 @@ type KV interface {
 	Delete(key string) error
 }
 
+type replicaKV interface {
+	PutReplica(key, value string) error
+	DeleteReplica(key string) error
+}
+
 // Server represents the HTTP server
 type Server struct {
 	kv         KV
@@ -68,7 +73,17 @@ func (s *Server) createHTTPHandler() http.Handler {
 			return
 		}
 
-		err := s.kv.PutString(key, value)
+		replica := r.Header.Get("X-LSMDB-Replica") == "1"
+		var err error
+		if replica {
+			if rk, ok := s.kv.(replicaKV); ok {
+				err = rk.PutReplica(key, value)
+			} else {
+				err = s.kv.PutString(key, value)
+			}
+		} else {
+			err = s.kv.PutString(key, value)
+		}
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -119,7 +134,17 @@ func (s *Server) createHTTPHandler() http.Handler {
 			return
 		}
 
-		err := s.kv.Delete(key)
+		replica := r.Header.Get("X-LSMDB-Replica") == "1"
+		var err error
+		if replica {
+			if rk, ok := s.kv.(replicaKV); ok {
+				err = rk.DeleteReplica(key)
+			} else {
+				err = s.kv.Delete(key)
+			}
+		} else {
+			err = s.kv.Delete(key)
+		}
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return

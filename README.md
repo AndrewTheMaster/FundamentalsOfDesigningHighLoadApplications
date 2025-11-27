@@ -115,6 +115,9 @@ curl -X DELETE "http://localhost:8081/api/delete?key=test"
 # Run complete demo
 ./demo_lsm.sh
 
+# Run failover demo (3-node cluster with replication)
+bash scripts/failover_demo.sh
+
 # Manual testing
 make docker-build
 make docker-run
