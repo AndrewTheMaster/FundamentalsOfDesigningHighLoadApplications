@@ -9,19 +9,20 @@ This repository contains a learning-oriented LSM-Tree key-value database impleme
 - **Lab 2**: Local implementation of storage engine (memtable, persistence layer) - **COMPLETED**
 - **Lab 3**: RPC exposure (REST API) and hosting - **COMPLETED**
 - **Lab 4**: Replication - **PENDING**
-- **Lab 5**: Sharding - **PENDING**
+- **Lab 5**: Sharding with Consistent Hashing and ZooKeeper Membership - **COMPLETED**
 
-## Current Implementation (Lab 3)
+## Current Implementation (Lab 5)
+The project now operates as a distributed cluster consisting of multiple LSMDB nodes that automatically discover each other, shard data, route requests, and rebalance on node failures.
 
 ### **LSM-Tree Architecture Implementation**
 
-**Core Components:**
+**LSM-Tree Core Components (Labs 1–3)**
 - **Memtable**: In-memory sorted storage with WAL for durability
 - **SSTables**: Multi-level storage with blocks, indexes, and bloom filters  
 - **Compaction**: Automatic level-based compaction strategy
 - **Manifest**: Metadata management for tables and levels
-- **REST API**: HTTP network interface with health checks
-- **Docker**: Containerized deployment ready
+- **REST API**: unified HTTP interface (PUT, GET, DELETE)
+- **Docker**: multi-stage build & containerized execution
 
 **Features Implemented:**
 - **Full LSM-tree**: Memtable → SSTables → Levels → Compaction
@@ -32,38 +33,88 @@ This repository contains a learning-oriented LSM-Tree key-value database impleme
 - **Testing**: Comprehensive test coverage
 - **Production Ready**: Error handling, logging, graceful shutdown
 
-**Implementation Status:**
+# **Distributed Components (Lab 5)**
+
+## ⭐ **Router (Local vs Remote Routing)**
+
+The Router is the heart of distributed LSMDB:
+
+```
+Client → Router → HashRing → Local or Remote store
+```
+
+Each operation logs where it goes:
+
+```
+[router] PUT    key=user:1 → node3:8080 (remote)
+[router] GET    key=user:1 → node1:8080 (local)
+```
+
+## ⭐ **Consistent Hashing Ring (with Virtual Nodes)**
+
+Implemented in `pkg/cluster/ring.go`, providing:
+
+* N virtual nodes per physical node
+* stable hashing
+* minimal key movement on node join/leave
+* natural load balancing
+
+Mapping:
+
+```
+key → crc32(key) → nearest node clockwise
+```
+
+## ⭐ **ZooKeeper-Based Membership**
+
+Nodes automatically join/leave the cluster:
+
+1. Node creates ephemeral znode under `/lsmdb/nodes/<addr>`
+2. Node watches the directory for changes
+3. On membership event → rebuilds hash ring
+4. Ephemeral znodes disappear on crash → cluster rebalances
+
+Benefits:
+
+* zero manual configuration
+* self-healing cluster
+* automatic failover
+
+
+## Implementation Status:
 
 **Fully Working:**
-- **Memtable + WAL**: Complete and functional
-- **SSTable Creation**: Files created successfully  
-- **Level Management**: Basic structure works
-- **REST API**: HTTP network interface working
-- **Docker**: Containerization complete
-- **Testing**: Core tests passing
-- **Basic Operations**: Put, Get, Delete work correctly
-- **Data Consistency**: Basic operations maintain consistency
+
+- Complete LSM engine
+- WAL + SSTable persistence
+- REST network interface
+- Multi-node cluster
+- Sharding and routing
+- Virtual-node consistent hashing
+- ZooKeeper-based discovery
+- Automatic ring rebuilding on failures
+- Client for testing distributed behavior
 
 **Partially Working:**
-- **SSTable Index**: Loading works but needs optimization
-- **Compaction**: Logic exists but needs debugging
-- **Concurrent Operations**: Works in memtable, fails in SSTables
-- **Data Persistence**: WAL replay works, but SSTable loading needs refinement
-
-**Not Working:**
-- **Advanced SSTable Operations**: Some index operations fail
-- **Full Compaction**: Triggers but fails in complex scenarios
-- **Complex Queries**: Limited functionality
+- Compaction needs optimization
+- Concurrency in SSTable readers requires refinement
+- SSTable index loading can be optimized
+- Lab 4 (Raft)
 
 ###  **Project Structure**
 ```
 lsmdb/
-├── cmd/main.go                 # Demo application
+├── cmd/
+│   ├── main.go            # Node entrypoint: LSM engine + ZooKeeper + Router + RPC
+│   └── demo/              # Client demo tool for testing routing and failures
+│       └── main.go
 ├── pkg/
 │   ├── memtable/              # In-memory storage
 │   │   ├── memtable.go        # Core memtable logic
 │   │   ├── sorted_set.go      # Sorted collection implementation
 │   │   └── item.go            # Data structures
+│   ├── cluster/               # Router, HashRing, ZooKeeper membership
+│   ├── rpc/                   # HTTP API (REST)
 │   ├── store/                 # High-level API
 │   │   ├── store.go           # Main Store implementation
 │   │   ├── store_test.go      # Comprehensive tests
@@ -76,39 +127,64 @@ lsmdb/
 └── internal/config/            # Configuration
 ```
 
-### **Testing & Verification**
+# **Distributed Testing (Lab 5)**
 
-**Lab 2 (Local Testing):**
+## Launch 3-node cluster + ZooKeeper:
+
 ```bash
-# Run basic operations locally
-go test ./pkg/store/... -v
-
-# Run demo locally
-go run cmd/main.go
+docker-compose up --build
 ```
 
-**Lab 3 (Remote Testing):**
-```bash
-# Build and run Docker container
-docker build -t lsmdb .
-docker run --rm -p 8081:8081 lsmdb
+Nodes register:
 
-# Test remote connection
-curl http://localhost:8081/health
-
-# Test REST API
-curl -X POST -d "key=test&value=data" http://localhost:8081/api/put
-curl "http://localhost:8081/api/get?key=test"
-curl -X DELETE "http://localhost:8081/api/delete?key=test"
+```
+/lsmdb/nodes/node1:8080
+/lsmdb/nodes/node2:8080
+/lsmdb/nodes/node3:8080
 ```
 
-**Test Results:**
-- **Basic Operations**: 100% passing (Put, Get, Delete)
-- **WAL Functionality**: 100% passing
-- **SSTable Creation**: 100% passing
-- **LSM-Tree Flow**: 100% passing
-- **Concurrent Operations**: 90% passing (some failures expected)
-- **Data Persistence**: 80% passing (WAL replay works, SSTable loading needs refinement)
+Each node outputs routing logs:
+```
+[router] PUT key=user:3 → node2:8080 (remote)
+```
+---
+
+# **Demo Client (sharding test)**
+
+Run:
+
+```bash
+go run ./cmd/demo http://localhost:8081
+```
+
+The demo:
+
+* inserts 100 keys
+* retrieves several keys
+* prints routing logs
+* reconstructs the ring
+* computes distribution:
+
+```
+node1:8080 → 34 keys
+node2:8080 → 33 keys
+node3:8080 → 33 keys
+```
+
+### Test failure handling:
+
+```
+docker stop lsmdb-node3
+```
+
+Output:
+
+```
+[zk] Node removed: node3:8080
+[router] Rebuilding ring...
+```
+
+Remaining nodes continue serving requests.
 
 **Integration Testing:**
 ```bash
@@ -177,4 +253,3 @@ curl http://localhost:8081/health
   - `pkg/replication.Log`, `Replicator`, `LogEntry`: replicated log storage + transport.
   - `pkg/consensus.Consensus`, `FSM`: leader election, propose/apply committed entries.
 - RPC layer (`pkg/rpc`): `KVService`, `AdminService`, `Server` lifecycle & registration.
-

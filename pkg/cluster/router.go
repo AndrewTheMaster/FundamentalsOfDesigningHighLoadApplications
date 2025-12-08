@@ -2,6 +2,7 @@ package cluster
 
 import (
 	"fmt"
+	"sync"
 )
 
 // удалённый клиент
@@ -19,14 +20,31 @@ type Router struct {
 	Ring      *HashRing
 	DB        KV
 	NewClient ClientFactory
+
+	mu sync.RWMutex
 }
 
 func (r *Router) owner(key string) (string, error) {
+	r.mu.RLock()
+	ring := r.Ring
+	r.mu.RUnlock()
+
+	if ring == nil {
+		return "", fmt.Errorf("ring is not initialized")
+	}
+
 	node, ok := r.Ring.GetNode(key)
 	if !ok {
 		return "", fmt.Errorf("ring is empty")
 	}
 	return node, nil
+}
+
+func (r *Router) UpdateRing(newRing *HashRing) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.Ring = newRing
+	fmt.Println("[router] ring updated; nodes:", newRing.ListNodes())
 }
 
 func (r *Router) log(method, key, target string, local bool) {

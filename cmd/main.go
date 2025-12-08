@@ -9,6 +9,7 @@ import (
 	"lsmdb/pkg/store"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 )
@@ -26,28 +27,51 @@ func main() {
 
 	cfg := config.Default()
 
-	fmt.Printf("LSMDB starting (Lab 5 Sharding). DataDir=%s\n", cfg.Storage.DataDir)
+	fmt.Printf("LSMDB starting (Lab 5 Sharding + ZK). DataDir=%s\n", cfg.Storage.DataDir)
 
-	clusterCfg := cluster.FromEnv()
-	fmt.Printf("Cluster config: local=%s, peers=%v\n", clusterCfg.Local, clusterCfg.Peers)
-
-	ring := cluster.NewHashRing(100) // 100 виртуальных нод
-	ring.AddNode(string(clusterCfg.Local))
-
-	for _, p := range clusterCfg.Peers {
-		ring.AddNode(string(p))
+	localAddr := os.Getenv("LSMDB_NODE_ADDR")
+	if localAddr == "" {
+		fmt.Println("LSMDB_NODE_ADDR is not set")
+		os.Exit(1)
 	}
-	fmt.Println("Cluster ring initialized with nodes:", ring.ListNodes())
 
-	// Create local store
+	zkServersEnv := os.Getenv("ZK_SERVERS")
+	if zkServersEnv == "" {
+		fmt.Println("ZK_SERVERS is not set")
+		os.Exit(1)
+	}
+	zkServers := strings.Split(zkServersEnv, ",")
+
+	// --- ZooKeeper membership ---
+	membership, err := cluster.NewZKMembership(zkServers, "/lsmdb", localAddr)
+	if err != nil {
+		fmt.Printf("Failed to connect to ZooKeeper: %v\n", err)
+		os.Exit(1)
+	}
+	defer membership.Close()
+
+	if err := membership.RegisterSelf(); err != nil {
+		fmt.Printf("Failed to register node in ZooKeeper: %v\n", err)
+		os.Exit(1)
+	}
+
+	// первичная сборка кольца
+	ring, err := membership.BuildRing(100)
+	if err != nil {
+		fmt.Printf("Failed to build ring from ZooKeeper: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Println("Initial ring nodes:", ring.ListNodes())
+
+	// --- локальное хранилище ---
 	db, err := store.New(cfg.Storage.DataDir, &timeProvider{})
 	if err != nil {
 		panic(err)
 	}
 
-	// Create remote store
+	// --- Router с изначальным кольцом ---
 	router := &cluster.Router{
-		LocalAddr: string(clusterCfg.Local), // тоже строка
+		LocalAddr: localAddr,
 		Ring:      ring,
 		DB:        db,
 		NewClient: func(target string) (cluster.Remote, error) {
@@ -56,16 +80,17 @@ func main() {
 		},
 	}
 
-	// Create gRPC server
-	server := rpc.NewServer(router, "8080")
+	// запустить watcher, который будет обновлять ring при изменении /lsmdb/nodes
+	membership.RunWatch(ctx, router, 100)
 
-	// Start server
+	// --- сервер поверх Router ---
+	server := rpc.NewServer(router, "8080")
 	if err := server.Start(); err != nil {
 		fmt.Printf("Failed to start server: %v\n", err)
 		os.Exit(1)
 	}
 
-	fmt.Println("gRPC/HTTP server running on port 8080")
+	fmt.Println("HTTP server is running on :8080 (with ZK-based sharding)")
 	fmt.Println("Press Ctrl+C to stop...")
 
 	// // Demo test operations
