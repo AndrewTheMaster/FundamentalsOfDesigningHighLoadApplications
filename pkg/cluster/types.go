@@ -7,6 +7,8 @@ import (
 
 type NodeID string
 
+type ShardID int
+
 type ClusterConfig struct {
 	Local NodeID
 	Peers []NodeID
