@@ -1,4 +1,4 @@
-package persistance
+package persistence
 
 import (
 	"bufio"
@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"sync"
 	"time"
@@ -18,10 +19,6 @@ type SSTableItem struct {
 	Value []byte
 	ID    uint64
 	Meta  uint64
-}
-
-type iCompressor interface {
-	Unpack(r io.Reader) (io.Reader, error)
 }
 
 type BloomFilter interface {
@@ -49,17 +46,14 @@ type SSTableMeta struct {
 }
 
 type SSTable struct {
-	filePath   string
-	reader     *os.File
-	compressor iCompressor
+	filePath string
+	reader   *os.File
 
 	bloom      BloomFilter
 	blockIndex []IndexEntry
 
 	cache BlockCache
 	mu    sync.RWMutex
-
-	stats SSTableMeta
 }
 
 func NewSSTable(path string, bloom BloomFilter, cache BlockCache) *SSTable {
@@ -78,17 +72,22 @@ func (s *SSTable) Open() error {
 	if err != nil {
 		return fmt.Errorf("failed to open SSTable file: %w", err)
 	}
+	// assign reader early so LoadIndex/LoadBloomFilter can use it
 	s.reader = file
 
 	// Load index
 	if err := s.LoadIndex(); err != nil {
-		file.Close()
+		if cerr := file.Close(); cerr != nil {
+			slog.Warn("failed to close sstable file after LoadIndex error", "path", s.filePath, "error", cerr)
+		}
 		return fmt.Errorf("failed to load index: %w", err)
 	}
 
 	// Load bloom filter
 	if err := s.LoadBloomFilter(); err != nil {
-		file.Close()
+		if cerr := file.Close(); cerr != nil {
+			slog.Warn("failed to close sstable file after LoadBloomFilter error", "path", s.filePath, "error", cerr)
+		}
 		return fmt.Errorf("failed to load bloom filter: %w", err)
 	}
 
@@ -175,7 +174,7 @@ func (s *SSTable) LoadIndex() error {
 		if err != nil {
 			return fmt.Errorf("failed to read key: %w", err)
 		}
-		if uint32(n) != keyLen {
+		if n != int(keyLen) {
 			break
 		}
 
@@ -421,7 +420,10 @@ type SSTableIterator struct {
 
 // First moves to the first entry
 func (it *SSTableIterator) First() {
-	it.reader.Seek(0, 0)
+	if _, err := it.reader.Seek(0, 0); err != nil {
+		it.err = err
+		return
+	}
 	it.Next()
 }
 

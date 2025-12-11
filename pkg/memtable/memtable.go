@@ -3,6 +3,7 @@ package memtable
 import (
 	"bytes"
 	"errors"
+	"lsmdb/pkg/config"
 	"sync"
 	"sync/atomic"
 
@@ -10,16 +11,15 @@ import (
 )
 
 var (
-	ErrMemTableOverload = errors.New("memtable is overloaded")
-	ErrTooLargeEntry    = errors.New("entry is too large")
+	ErrTooLargeEntry = errors.New("entry is too large")
 )
 
 type concurrentSet = skipmap.FuncMap[[]byte, Item]
 
 type Memtable struct {
-	threshold uint64
-	ver       atomic.Uint64
-	size      atomic.Uint64
+	cfg  *config.MemtableConfig
+	ver  atomic.Uint64
+	size atomic.Uint64
 
 	underlying atomic.Pointer[concurrentSet]
 	// old immutable tables
@@ -31,10 +31,10 @@ type Memtable struct {
 	cond      *sync.Cond
 }
 
-func New(threshold uint) *Memtable {
+func New(cfg config.MemtableConfig) *Memtable {
 	mt := Memtable{
-		threshold: uint64(threshold),
-		flushChan: make(chan SortedSet, 3),
+		cfg:       &cfg,
+		flushChan: make(chan SortedSet, cfg.FlushChanBuffSize),
 	}
 	mt.underlying.Store(
 		skipmap.NewFunc[[]byte, Item](func(a, b []byte) bool {
@@ -73,8 +73,13 @@ func (mt *Memtable) Upsert(k, value []byte, seqN, meta uint64) error {
 		mdSize   = 8
 		seqNSize = 8
 	)
-	entSize := uint64(len(k)) + uint64(len(value)) + seqNSize + mdSize
-	if entSize > mt.threshold {
+
+	var (
+		entSize   = uint64(len(k)) + uint64(len(value)) + seqNSize + mdSize
+		threshold = uint64(mt.cfg.FlushThresholdBytes)
+	)
+
+	if entSize > threshold {
 		return ErrTooLargeEntry
 	}
 
@@ -82,7 +87,7 @@ func (mt *Memtable) Upsert(k, value []byte, seqN, meta uint64) error {
 		currentSize := mt.size.Load()
 		newSize := currentSize + entSize
 
-		if newSize < mt.threshold {
+		if newSize < threshold {
 			if mt.size.CompareAndSwap(currentSize, newSize) {
 				break
 			}
@@ -116,10 +121,6 @@ func (mt *Memtable) Upsert(k, value []byte, seqN, meta uint64) error {
 }
 
 func (mt *Memtable) rotate(initSize uint64) {
-	const (
-		maxImmCS = 3
-	)
-
 	current := mt.underlying.Load()
 	mt.flushChan <- &sortedSet{current}
 
@@ -129,7 +130,7 @@ func (mt *Memtable) rotate(initSize uint64) {
 		newSlice = append([]*concurrentSet{}, *oldSlicePtr...)
 	}
 	newSlice = append(newSlice, current)
-	if len(newSlice) > maxImmCS {
+	if len(newSlice) > mt.cfg.MaxImmTables {
 		// drop the oldest immutable table
 		newSlice = newSlice[1:]
 	}

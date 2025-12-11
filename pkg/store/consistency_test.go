@@ -2,17 +2,22 @@ package store
 
 import (
 	"fmt"
+	"lsmdb/pkg/config"
+	"lsmdb/pkg/wal"
 	"testing"
-	"time"
 )
 
 // TestDataConsistency tests data consistency across operations
 func TestDataConsistency(t *testing.T) {
 	tempDir := t.TempDir()
-
-	// Create store
-	timeProvider := &mockTimeProvider{now: time.Now()}
-	store, err := New(tempDir, timeProvider)
+	cfg := config.Default()
+	cfg.Persistence.RootPath = tempDir
+	journal, err := wal.New(cfg.Persistence.RootPath)
+	if err != nil {
+		t.Fatalf("Failed to create WAL: %v", err)
+	}
+	defer journal.Close()
+	store, err := New(&cfg, journal)
 	if err != nil {
 		t.Fatalf("Failed to create store: %v", err)
 	}
@@ -79,10 +84,13 @@ func TestDataConsistency(t *testing.T) {
 // TestDataPersistence tests data persistence across restarts
 func TestDataPersistence(t *testing.T) {
 	tempDir := t.TempDir()
-
-	// Create first store instance
-	timeProvider1 := &mockTimeProvider{now: time.Now()}
-	store1, err := New(tempDir, timeProvider1)
+	cfg1 := config.Default()
+	cfg1.Persistence.RootPath = tempDir
+	journal1, err := wal.New(cfg1.Persistence.RootPath)
+	if err != nil {
+		t.Fatalf("Failed to create WAL: %v", err)
+	}
+	store1, err := New(&cfg1, journal1)
 	if err != nil {
 		t.Fatalf("Failed to create store: %v", err)
 	}
@@ -92,10 +100,15 @@ func TestDataPersistence(t *testing.T) {
 		t.Fatalf("PutString failed: %v", err)
 	}
 	store1.Close()
+	journal1.Close()
 
-	// Create second store instance (simulating restart)
-	timeProvider2 := &mockTimeProvider{now: time.Now()}
-	store2, err := New(tempDir, timeProvider2)
+	cfg2 := config.Default()
+	cfg2.Persistence.RootPath = tempDir
+	journal2, err := wal.New(cfg2.Persistence.RootPath)
+	if err != nil {
+		t.Fatalf("Failed to create WAL: %v", err)
+	}
+	store2, err := New(&cfg2, journal2)
 	if err != nil {
 		t.Fatalf("Failed to create store: %v", err)
 	}
@@ -111,15 +124,21 @@ func TestDataPersistence(t *testing.T) {
 	if value != "persistent_value" {
 		t.Fatalf("Expected persistent_value, got %s", value)
 	}
+	store2.Close()
+	journal2.Close()
 }
 
 // TestConcurrentConsistency tests consistency under concurrent access
 func TestConcurrentConsistency(t *testing.T) {
 	tempDir := t.TempDir()
-
-	// Create store
-	timeProvider := &mockTimeProvider{now: time.Now()}
-	store, err := New(tempDir, timeProvider)
+	cfg := config.Default()
+	cfg.Persistence.RootPath = tempDir
+	journal, err := wal.New(cfg.Persistence.RootPath)
+	if err != nil {
+		t.Fatalf("Failed to create WAL: %v", err)
+	}
+	defer journal.Close()
+	store, err := New(&cfg, journal)
 	if err != nil {
 		t.Fatalf("Failed to create store: %v", err)
 	}
@@ -167,10 +186,14 @@ func TestConcurrentConsistency(t *testing.T) {
 // TestTransactionConsistency tests consistency of transaction-like operations
 func TestTransactionConsistency(t *testing.T) {
 	tempDir := t.TempDir()
-
-	// Create store
-	timeProvider := &mockTimeProvider{now: time.Now()}
-	store, err := New(tempDir, timeProvider)
+	cfg := config.Default()
+	cfg.Persistence.RootPath = tempDir
+	journal, err := wal.New(cfg.Persistence.RootPath)
+	if err != nil {
+		t.Fatalf("Failed to create WAL: %v", err)
+	}
+	defer journal.Close()
+	store, err := New(&cfg, journal)
 	if err != nil {
 		t.Fatalf("Failed to create store: %v", err)
 	}

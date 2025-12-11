@@ -7,26 +7,22 @@ import (
 	"lsmdb/pkg/cluster"
 	"lsmdb/pkg/rpc"
 	"lsmdb/pkg/store"
-	"os"
+	"lsmdb/pkg/wal"
 	"os/signal"
 	"strings"
 	"syscall"
-	"time"
 )
-
-// timeProvider implements iTimeProvider
-type timeProvider struct{}
-
-func (tp *timeProvider) Now() time.Time {
-	return time.Now()
-}
 
 func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
-	cfg := config.Default()
+	cfg, err := initConfig("./config/application.yml")
+	if err != nil {
+		panic("failed to init config: " + err.Error())
+	}
 
+<<<<<<< HEAD
 	fmt.Printf("LSMDB starting (Lab 5 Sharding + ZK). DataDir=%s\n", cfg.Storage.DataDir)
 
 	localAddr := os.Getenv("LSMDB_NODE_ADDR")
@@ -65,7 +61,22 @@ func main() {
 
 	// --- локальное хранилище ---
 	db, err := store.New(cfg.Storage.DataDir, &timeProvider{})
+=======
+	// Initialize global logger
+	initLogger(&cfg)
+
+	slog.Info("LSMDB starting", "rootPath", cfg.Persistence.RootPath)
+
+	jr, err := wal.New(cfg.Persistence.RootPath)
 	if err != nil {
+		panic("failed to create WAL: " + err.Error())
+	}
+
+	// Create store
+	db, err := store.New(&cfg, jr)
+>>>>>>> origin/lab4
+	if err != nil {
+		slog.Error("failed to create db", "error", err)
 		panic(err)
 	}
 
@@ -86,8 +97,8 @@ func main() {
 	// --- сервер поверх Router ---
 	server := rpc.NewServer(router, "8080")
 	if err := server.Start(); err != nil {
-		fmt.Printf("Failed to start server: %v\n", err)
-		os.Exit(1)
+		slog.Error("Failed to start server", "error", err)
+		return
 	}
 
 	fmt.Println("HTTP server is running on :8080 (with ZK-based sharding)")
@@ -149,9 +160,67 @@ func main() {
 	<-ctx.Done()
 
 	if err := server.Stop(); err != nil {
-		fmt.Printf("Error stopping server: %v\n", err)
+		slog.Error("Error stopping server", "error", err)
 	}
 
-	fmt.Println("LSMDB stopped")
-	os.Exit(0)
+	slog.Info("LSMDB terminated")
+}
+
+func demo(db *store.Store) {
+	// Demo operations
+	slog.Info("Testing basic operations")
+
+	// Put some data
+	if err := db.PutString("user:1", "Alice"); err != nil {
+		slog.Error("Error putting user:1", "error", err)
+	}
+
+	if err := db.PutString("user:2", "Bob"); err != nil {
+		slog.Error("Error putting user:2", "error", err)
+	}
+
+	if err := db.PutString("config:timeout", "30s"); err != nil {
+		slog.Error("Error putting config:timeout", "error", err)
+	}
+
+	// Get data
+	if value, found, err := db.GetString("user:1"); err != nil {
+		slog.Error("Error getting user:1", "error", err)
+	} else if found {
+		slog.Info("user:1", "value", value)
+	}
+
+	if value, found, err := db.GetString("user:2"); err != nil {
+		slog.Error("Error getting user:2", "error", err)
+	} else if found {
+		slog.Info("user:2", "value", value)
+	}
+
+	// Update data
+	if err := db.PutString("user:1", "Alice Updated"); err != nil {
+		slog.Error("Error updating user:1", "error", err)
+	}
+
+	// Verify update
+	if value, found, err := db.GetString("user:1"); err != nil {
+		slog.Error("Error getting updated user:1", "error", err)
+	} else if found {
+		slog.Info("Updated user:1", "value", value)
+	}
+
+	// Delete data
+	if err := db.Delete("user:2"); err != nil {
+		slog.Error("Error deleting user:2", "error", err)
+	}
+
+	// Verify deletion
+	if _, found, err := db.GetString("user:2"); err != nil {
+		slog.Error("Error checking deleted user:2", "error", err)
+	} else if found {
+		slog.Error("user:2 should be deleted but was found")
+	} else {
+		slog.Info("user:2 successfully deleted")
+	}
+
+	slog.Info("Demo completed successfully!")
 }

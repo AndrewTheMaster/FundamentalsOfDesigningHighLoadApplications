@@ -1,4 +1,4 @@
-package persistance
+package persistence
 
 type Iterator struct {
 }
