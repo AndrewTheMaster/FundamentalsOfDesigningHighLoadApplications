@@ -1,31 +1,83 @@
-version: '3.8'
+version: "3.8"
 
 services:
-  lsmdb:
-    build: .
+  zookeeper:
+    image: zookeeper:3.9
+    container_name: lsmdb-zookeeper
     ports:
-      - "8080:8080"
-    volumes:
-      - ./data:/data
+      - "2181:2181"
+    environment:
+      ZOO_4LW_COMMANDS_WHITELIST: "ruok,stat"
+    restart: unless-stopped
+    networks:
+      - lsmdb-net
+
+  node1:
+    build: .
+    container_name: lsmdb-node1
     environment:
       - DATA_DIR=/data
-      - PORT=8080
+      - LSMDB_NODE_ADDR=node1:8080
+      - ZK_SERVERS=zookeeper:2181
+    volumes:
+      - ./data/node1:/data
+    ports:
+      - "8081:8080"          # с хоста: http://localhost:8081
     restart: unless-stopped
+    networks:
+      - lsmdb-net
+    depends_on:
+      - zookeeper
     healthcheck:
       test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:8080/health"]
-      interval: 30s
-      timeout: 10s
+      interval: 10s
+      timeout: 5s
       retries: 3
-      start_period: 40s
 
-  # Optional: Add a client for testing
-  lsmdb-client:
+  node2:
     build: .
-    command: ["./main", "client"]
-    depends_on:
-      - lsmdb
-    volumes:
-      - ./data:/data
+    container_name: lsmdb-node2
     environment:
       - DATA_DIR=/data
-      - PORT=8080
+      - LSMDB_NODE_ADDR=node2:8080
+      - ZK_SERVERS=zookeeper:2181
+    volumes:
+      - ./data/node2:/data
+    ports:
+      - "8082:8080"          # с хоста: http://localhost:8082
+    restart: unless-stopped
+    networks:
+      - lsmdb-net
+    depends_on:
+      - zookeeper
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  node3:
+    build: .
+    container_name: lsmdb-node3
+    environment:
+      - DATA_DIR=/data
+      - LSMDB_NODE_ADDR=node3:8080
+      - ZK_SERVERS=zookeeper:2181
+    volumes:
+      - ./data/node3:/data
+    ports:
+      - "8083:8080"          # с хоста: http://localhost:8083
+    restart: unless-stopped
+    networks:
+      - lsmdb-net
+    depends_on:
+      - zookeeper
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+networks:
+  lsmdb-net:
+    driver: bridge
