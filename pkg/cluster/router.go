@@ -1,11 +1,8 @@
 package cluster
 
 import (
-	"context"
 	"fmt"
 	"sync"
-
-	"github.com/go-zookeeper/zk"
 )
 
 // удалённый клиент
@@ -18,26 +15,23 @@ type Remote interface {
 // фабрика удалённых клиентов
 type ClientFactory func(target string) (Remote, error)
 
-// Шардовая Raft-нода: нам важен только KV-интерфейс.
-type ShardRaftNode interface {
-	PutString(key, value string) error
-	GetString(key string) (string, bool, error)
-	Delete(key string) error
-}
 
 type Router struct {
-	LocalAddr  string
-	Ring       *HashRing                 //кольцо по нодам — используется старым API и ZK-membership
-	ShardRing  *HashRing                 //кольцо по логическим шардам "shard-0".."shard-N"
-	Directory  *ShardDirectory           // каталог лидеров: shardID -> addr (через ZooKeeper)
-	ShardNodes map[ShardID]ShardRaftNode // локальные Raft-ноды по шардам для этой машины
-	DB         KV                        //для простого режима без шардинга
-	NewClient  ClientFactory             // addr → RemoteStore (HTTP/gRPC-клиент)
+	LocalAddr string
+	Ring      *HashRing
+	RF        int
 
+	// локальный KV store для чтения (если нода — реплика)
+	DB interface {
+		PutString(key, value string) error
+		GetString(key string) (string, bool, error)
+		Delete(key string) error
+	}
+
+	NewClient ClientFactory
 	mu sync.RWMutex
 }
 
-// ===== 1. Старый API: Consistent Hashing по нодам =====
 func (r *Router) owner(key string) (string, error) {
 	r.mu.RLock()
 	ring := r.Ring
@@ -47,7 +41,7 @@ func (r *Router) owner(key string) (string, error) {
 		return "", fmt.Errorf("ring is not initialized")
 	}
 
-	node, ok := r.Ring.GetNode(key)
+	node, ok := ring.GetNode(key)
 	if !ok {
 		return "", fmt.Errorf("ring is empty")
 	}
@@ -58,6 +52,10 @@ func (r *Router) UpdateRing(newRing *HashRing) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.Ring = newRing
+	if newRing == nil {
+		fmt.Println("[router] ring updated; <nil>")
+		return
+	}
 	fmt.Println("[router] ring updated; nodes:", newRing.ListNodes())
 }
 
@@ -70,7 +68,7 @@ func (r *Router) log(method, key, target string, local bool) {
 	fmt.Printf("[router] %-6s key=%s → %s (%s)\n", method, key, target, where)
 }
 
-func (r *Router) PutString(key, value string) error {
+func (r *Router) LegacyPutString(key, value string) error {
 	target, err := r.owner(key)
 	if err != nil {
 		return err
@@ -91,7 +89,7 @@ func (r *Router) PutString(key, value string) error {
 	return cl.PutString(key, value)
 }
 
-func (r *Router) GetString(key string) (string, bool, error) {
+func (r *Router) LegacyGetString(key string) (string, bool, error) {
 	target, err := r.owner(key)
 	if err != nil {
 		return "", false, err
@@ -112,7 +110,7 @@ func (r *Router) GetString(key string) (string, bool, error) {
 	return cl.GetString(key)
 }
 
-func (r *Router) Delete(key string) error {
+func (r *Router) LegacyDelete(key string) error {
 	target, err := r.owner(key)
 	if err != nil {
 		return err
@@ -133,174 +131,112 @@ func (r *Router) Delete(key string) error {
 	return cl.Delete(key)
 }
 
-// ===== 2. key -> shardID -> leader через ZooKeeper =====
-// shardForKey: Consistent Hashing по логическим shard-имёнам.
-func (r *Router) shardForKey(key string) (ShardID, error) {
-	// Если отдельно не инициализировали кольцо по шардам,
-	// по-умолчанию используем node-кольцо, считая его кольцом по шардам.
-	ring := r.ShardRing
+func (r *Router) replicasForKey(key string) ([]string, error) {
+	r.mu.RLock()
+	ring := r.Ring
+	rf := r.RF
+	r.mu.RUnlock()
+
 	if ring == nil {
-		ring = r.Ring
+		return nil, fmt.Errorf("ring is not initialized")
 	}
-	if ring == nil {
-		return 0, fmt.Errorf("shard ring is not initialized")
+	if rf <= 0 {
+		return nil, fmt.Errorf("RF must be > 0")
 	}
 
-	id, err := ShardFromRing(ring, key)
-	if err != nil {
-		return 0, err
+	replicas, ok := ring.ReplicasForKey(key, rf)
+	if !ok || len(replicas) == 0 {
+		return nil, fmt.Errorf("ring is empty")
 	}
-	return id, nil
+	return replicas, nil
 }
 
-func (r *Router) localShardNode(id ShardID) (ShardRaftNode, bool) {
-	if r.ShardNodes == nil {
-		return nil, false
+func contains(ss []string, x string) bool {
+	for _, s := range ss {
+		if s == x {
+			return true
+		}
 	}
-	n, ok := r.ShardNodes[id]
-	return n, ok
+	return false
 }
 
-// Put — вариант B: key → shardID → raftGroup → leader
-func (r *Router) Put(ctx context.Context, key, value string) error {
-	shardID, err := r.shardForKey(key)
+// Put: отправляем на "первую реплику" (или на себя, если мы в replica set).
+// Сервер сам редиректит на raft-лидера и делает Execute через Raft. :contentReference[oaicite:9]{index=9}
+func (r *Router) Put(key, value string) error {
+	replicas, err := r.replicasForKey(key)
 	if err != nil {
 		return err
 	}
 
-	if r.Directory == nil {
-		// запасной режим: старый вариант без шардинга
-		return r.PutString(key, value)
+	// предпочтение локали (если мы реплика) — меньше hops
+	target := replicas[0]
+	if contains(replicas, r.LocalAddr) {
+		target = r.LocalAddr
 	}
 
-	leader, err := r.Directory.LeaderFor(shardID)
+	if target == r.LocalAddr {
+		// важно: локальный PUT должен идти через тот же HTTP API/raft,
+		// иначе мы обойдём Raft. Поэтому локально мы тоже используем Remote,
+		// либо вызываем внутренний handler напрямую (не советую).
+	}
+
+	cl, err := r.NewClient(target)
 	if err != nil {
-		return fmt.Errorf("resolve leader for shard %d: %w", shardID, err)
-	}
-
-	// лидер на этой ноде → идём в локальную Raft-группу
-	if leader == r.LocalAddr {
-		if node, ok := r.localShardNode(shardID); ok {
-			return node.PutString(key, value) // внутри будет raft.Propose
-		}
-		return fmt.Errorf("no local shard node for shard %d", shardID)
-	}
-
-	// лидер на другой ноде → идём по RPC
-	cl, err := r.NewClient(leader)
-	if err != nil {
-		return fmt.Errorf("router: create client for %s: %w", leader, err)
+		return fmt.Errorf("router: create client: %w", err)
 	}
 	return cl.PutString(key, value)
 }
 
-func (r *Router) Get(ctx context.Context, key string) (string, bool, error) {
-	shardID, err := r.shardForKey(key)
+func (r *Router) Delete(key string) error {
+	replicas, err := r.replicasForKey(key)
+	if err != nil {
+		return err
+	}
+
+	target := replicas[0]
+	if contains(replicas, r.LocalAddr) {
+		target = r.LocalAddr
+	}
+
+	cl, err := r.NewClient(target)
+	if err != nil {
+		return fmt.Errorf("router: create client: %w", err)
+	}
+	return cl.Delete(key)
+}
+
+// Get: читаем с любой живой реплики, локально — если мы в replica set.
+func (r *Router) Get(key string) (string, bool, error) {
+	replicas, err := r.replicasForKey(key)
 	if err != nil {
 		return "", false, err
 	}
 
-	if r.Directory == nil {
-		// запасной режим: старый вариант без шардинга
-		return r.GetString(key)
+	if contains(replicas, r.LocalAddr) {
+		// локальное чтение из DB ок, потому что DB уже заполнится через applyFilter (это следующий этап)
+		return r.DB.GetString(key)
 	}
 
-	leader, err := r.Directory.LeaderFor(shardID)
-	if err != nil {
-		return "", false, fmt.Errorf("resolve leader for shard %d: %w", shardID, err)
-	}
-
-	if leader == r.LocalAddr {
-		if node, ok := r.localShardNode(shardID); ok {
-			return node.GetString(key)
-		}
-		return "", false, fmt.Errorf("no local shard node for shard %d", shardID)
-	}
-
-	cl, err := r.NewClient(leader)
-	if err != nil {
-		return "", false, fmt.Errorf("router: create client: %w", err)
-	}
-	return cl.GetString(key)
-}
-
-// ===== 3. ShardDirectory: shardID -> leader (ZooKeeper) =====
-
-// ShardDirectory хранит в ZooKeeper соответствие shardID -> адрес лидера
-// в виде znode:  {base}/shard-{id}/leader
-type ShardDirectory struct {
-	zk      *zk.Conn
-	base    string
-	mu      sync.RWMutex
-	leaders map[ShardID]string
-}
-
-// NewShardDirectory создаёт каталог лидеров по шард-ID.
-func NewShardDirectory(conn *zk.Conn, base string) *ShardDirectory {
-	if base == "" {
-		base = "/lsmdb/shards"
-	}
-	return &ShardDirectory{
-		zk:      conn,
-		base:    base,
-		leaders: make(map[ShardID]string),
-	}
-}
-
-func (d *ShardDirectory) leaderPath(id ShardID) string {
-	return fmt.Sprintf("%s/shard-%d/leader", d.base, id)
-}
-
-// LeaderFor возвращает адрес лидера для shardID,
-// сначала смотря в локальный кэш, затем — в ZooKeeper.
-func (d *ShardDirectory) LeaderFor(id ShardID) (string, error) {
-	d.mu.RLock()
-	if l, ok := d.leaders[id]; ok && l != "" {
-		d.mu.RUnlock()
-		return l, nil
-	}
-	d.mu.RUnlock()
-
-	data, _, err := d.zk.Get(d.leaderPath(id))
-	if err != nil {
-		return "", err
-	}
-	leader := string(data)
-
-	d.mu.Lock()
-	d.leaders[id] = leader
-	d.mu.Unlock()
-
-	return leader, nil
-}
-
-// RegisterLeader регистрирует текущую ноду как лидера шарда в ZK.
-// Используем ephemeral znode, чтобы при падении лидера запись исчезла.
-func (d *ShardDirectory) RegisterLeader(id ShardID, addr string) error {
-	if d == nil || d.zk == nil {
-		return fmt.Errorf("shard directory is not initialized")
-	}
-	path := d.leaderPath(id)
-	data := []byte(addr)
-
-	// Пытаемся создать ephemeral-znode.
-	_, err := d.zk.Create(path, data, zk.FlagEphemeral, zk.WorldACL(zk.PermAll))
-	if err == zk.ErrNodeExists {
-		// Если уже существует — просто обновим данные.
-		_, stat, err := d.zk.Get(path)
+	var lastErr error
+	for _, addr := range replicas {
+		cl, err := r.NewClient(addr)
 		if err != nil {
-			return err
+			lastErr = err
+			continue
 		}
-		_, err = d.zk.Set(path, data, stat.Version)
-		if err != nil {
-			return err
+		v, ok, err := cl.GetString(key)
+		if err == nil {
+			return v, ok, nil
 		}
-	} else if err != nil {
-		return err
+		lastErr = err
 	}
+	return "", false, fmt.Errorf("all replicas failed for key=%s: lastErr=%v", key, lastErr)
+}
 
-	d.mu.Lock()
-	d.leaders[id] = addr
-	d.mu.Unlock()
-	return nil
+func (r *Router) IsLocalReplica(key string) bool {
+	replicas, err := r.replicasForKey(key)
+	if err != nil {
+		return false
+	}
+	return contains(replicas, r.LocalAddr)
 }

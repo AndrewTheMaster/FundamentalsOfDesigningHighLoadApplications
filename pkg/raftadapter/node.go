@@ -37,6 +37,7 @@ type Node struct {
 	conf         *raftpb.ConfState
 	tickInterval time.Duration
 	transport    iTransport
+	applyFilter  func(key string) bool
 
 	ctx  context.Context
 	stop context.CancelFunc
@@ -184,6 +185,15 @@ func (n *Node) applyEntry(entry raftpb.Entry) error {
 		return fmt.Errorf("unmarshal command: %w", err)
 	}
 
+	key := string(cmd.Key)
+
+    // изменения из-за шардирование+репликация
+	// Нода применяет запись, только если она "реплика" для этого ключа.
+	if n.applyFilter != nil && !n.applyFilter(key) {
+		// важно: для лидера нужно всё равно разбудить ожидание результата
+		return n.notifyProposalResult(cmd.ID, proposeResult{Err: nil})
+	}
+
 	var err error
 	switch cmd.Op {
 	case store.InsertOp:
@@ -299,4 +309,10 @@ func (n *Node) Stop() error {
 
 	slog.Info("raft node stopped", "id", n.ID)
 	return nil
+}
+
+// SetApplyFilter задаёт фильтр: применять команду к local store или пропускать.
+// Если фильтр nil — применяем всё (как раньше).
+func (n *Node) SetApplyFilter(fn func(key string) bool) {
+	n.applyFilter = fn
 }

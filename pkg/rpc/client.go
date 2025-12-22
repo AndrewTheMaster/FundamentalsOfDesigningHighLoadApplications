@@ -11,54 +11,58 @@ import (
 	"time"
 )
 
-// RemoteStore — простой HTTP-клиент к REST API другой ноды.
-type RemoteStore struct {
+type HTTPStore struct {
 	baseURL string
 	client  *http.Client
 }
 
-// NewRemoteStore создаёт новый клиент для базового URL, например "http://node1:8080".
-func NewRemoteStore(baseURL string) *RemoteStore {
-	baseURL = strings.TrimRight(baseURL, "/")
-	return &RemoteStore{
-		baseURL: baseURL,
+type ValueResponse struct {
+	Value string `json:"value"`
+}
+
+func NewHTTPStore(baseURL string) *HTTPStore {
+	return &HTTPStore{
+		baseURL: strings.TrimRight(baseURL, "/"),
 		client: &http.Client{
-			Timeout: 5 * time.Second,
+			Timeout: 3 * time.Second,
+			// важно: разрешаем редиректы (307/302) — default ок,
+			// но делаем явным, чтобы можно было менять позже.
+			CheckRedirect: func(req *http.Request, via []*http.Request) error {
+				return nil
+			},
 		},
 	}
 }
 
-func (r *RemoteStore) PutString(key, value string) error {
+func (s *HTTPStore) PutString(key, value string) error {
 	form := url.Values{}
 	form.Set("key", key)
 	form.Set("value", value)
 
-	resp, err := r.client.Post(
-		r.baseURL+"/api/put",
-		"application/x-www-form-urlencoded",
-		strings.NewReader(form.Encode()),
-	)
+	req, err := http.NewRequest(http.MethodPut, s.baseURL+"/api/string", bytes.NewBufferString(form.Encode()))
 	if err != nil {
-		return fmt.Errorf("remote put: %w", err)
+		return err
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return fmt.Errorf("PUT failed: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("remote put: status %d: %s", resp.StatusCode, string(body))
+		b, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("PUT status=%d body=%s", resp.StatusCode, string(b))
 	}
 	return nil
 }
 
-func (r *RemoteStore) GetString(key string) (string, bool, error) {
-	req, err := http.NewRequest(http.MethodGet, r.baseURL+"/api/get?key="+url.QueryEscape(key), nil)
+func (s *HTTPStore) GetString(key string) (string, bool, error) {
+	u := s.baseURL + "/api/string?key=" + url.QueryEscape(key)
+	resp, err := s.client.Get(u)
 	if err != nil {
-		return "", false, fmt.Errorf("remote get: %w", err)
-	}
-
-	resp, err := r.client.Do(req)
-	if err != nil {
-		return "", false, fmt.Errorf("remote get: %w", err)
+		return "", false, fmt.Errorf("GET failed: %w", err)
 	}
 	defer resp.Body.Close()
 
@@ -66,40 +70,38 @@ func (r *RemoteStore) GetString(key string) (string, bool, error) {
 		return "", false, nil
 	}
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return "", false, fmt.Errorf("remote get: status %d: %s", resp.StatusCode, string(body))
+		b, _ := io.ReadAll(resp.Body)
+		return "", false, fmt.Errorf("GET status=%d body=%s", resp.StatusCode, string(b))
 	}
 
-	var payload struct {
-		Value string `json:"value"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
-		body, _ := io.ReadAll(resp.Body)
-		return "", false, fmt.Errorf("remote get: decode: %w (body=%q)", err, string(body))
+	b, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", false, err
 	}
 
-	return payload.Value, true, nil
+	var vr ValueResponse
+	if err := json.Unmarshal(b, &vr); err != nil {
+		return "", false, fmt.Errorf("decode: %w body=%s", err, string(b))
+	}
+	return vr.Value, true, nil
 }
 
-func (r *RemoteStore) Delete(key string) error {
-	req, err := http.NewRequest(
-		http.MethodDelete,
-		r.baseURL+"/api/delete?key="+url.QueryEscape(key),
-		bytes.NewReader(nil),
-	)
+func (s *HTTPStore) Delete(key string) error {
+	u := s.baseURL + "/api?key=" + url.QueryEscape(key)
+	req, err := http.NewRequest(http.MethodDelete, u, nil)
 	if err != nil {
-		return fmt.Errorf("remote delete: %w", err)
+		return err
 	}
 
-	resp, err := r.client.Do(req)
+	resp, err := s.client.Do(req)
 	if err != nil {
-		return fmt.Errorf("remote delete: %w", err)
+		return fmt.Errorf("DELETE failed: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("remote delete: status %d: %s", resp.StatusCode, string(body))
+		b, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("DELETE status=%d body=%s", resp.StatusCode, string(b))
 	}
 	return nil
 }

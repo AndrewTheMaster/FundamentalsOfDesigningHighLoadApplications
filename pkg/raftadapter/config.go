@@ -6,16 +6,26 @@ import (
 	"go.etcd.io/etcd/raft/v3"
 )
 
-func toRaftConfig(c *config.RaftConfig) *raft.Config {
+func toRaftConfig(cfg *config.RaftConfig) *raft.Config {
+	maxInflight := cfg.MaxInflightMsgs
+	if maxInflight <= 0 {
+		maxInflight = 256
+	}
+
+	maxSize := cfg.MaxSizePerMsg
+	if maxSize <= 0 {
+		maxSize = 1024 * 1024 // 1MB
+	}
+
 	return &raft.Config{
-		ID:                        c.ID,
-		ElectionTick:              c.ElectionTick,
-		HeartbeatTick:             c.HeartbeatTick,
-		MaxSizePerMsg:             c.MaxSizePerMsg,
-		MaxCommittedSizePerReady:  c.MaxCommittedSizePerReady,
-		MaxUncommittedEntriesSize: c.MaxUncommittedEntriesSize,
-		MaxInflightMsgs:           c.MaxInflightMsgs,
-		CheckQuorum:               c.CheckQuorum,
-		PreVote:                   c.PreVote,
+		ID:              cfg.ID,
+		ElectionTick:    cfg.ElectionTick,
+		HeartbeatTick:   cfg.HeartbeatTick,
+		MaxInflightMsgs: maxInflight,
+		MaxSizePerMsg:   maxSize,
+
+		// хорошие практики
+		CheckQuorum: true,
+		PreVote:     true,
 	}
 }

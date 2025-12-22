@@ -1,83 +1,38 @@
 version: "3.8"
 
 services:
-  zookeeper:
-    image: zookeeper:3.9
-    container_name: lsmdb-zookeeper
-    ports:
-      - "2181:2181"
-    environment:
-      ZOO_4LW_COMMANDS_WHITELIST: "ruok,stat"
-    restart: unless-stopped
-    networks:
-      - lsmdb-net
-
   node1:
     build: .
-    container_name: lsmdb-node1
+    container_name: node1
     environment:
-      - DATA_DIR=/data
-      - LSMDB_NODE_ADDR=node1:8080
-      - ZK_SERVERS=zookeeper:2181
-    volumes:
-      - ./data/node1:/data
+      - LSMDB_RAFT_ID=1
+      - LSMDB_RAFT_PEERS=1=http://node1:8080,2=http://node2:8080,3=http://node3:8080
+      - LSMDB_ADVERTISE_URL=http://node1:8080
+      - LSMDB_RF=2
+      - LSMDB_VNODES=100
     ports:
-      - "8081:8080"          # с хоста: http://localhost:8081
-    restart: unless-stopped
-    networks:
-      - lsmdb-net
-    depends_on:
-      - zookeeper
-    healthcheck:
-      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:8080/health"]
-      interval: 10s
-      timeout: 5s
-      retries: 3
+      - "8081:8080"
 
   node2:
     build: .
-    container_name: lsmdb-node2
+    container_name: node2
     environment:
-      - DATA_DIR=/data
-      - LSMDB_NODE_ADDR=node2:8080
-      - ZK_SERVERS=zookeeper:2181
-    volumes:
-      - ./data/node2:/data
+      - LSMDB_RAFT_ID=2
+      - LSMDB_RAFT_PEERS=1=http://node1:8080,2=http://node2:8080,3=http://node3:8080
+      - LSMDB_ADVERTISE_URL=http://node2:8080
+      - LSMDB_RF=2
+      - LSMDB_VNODES=100
     ports:
-      - "8082:8080"          # с хоста: http://localhost:8082
-    restart: unless-stopped
-    networks:
-      - lsmdb-net
-    depends_on:
-      - zookeeper
-    healthcheck:
-      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:8080/health"]
-      interval: 10s
-      timeout: 5s
-      retries: 3
+      - "8082:8080"
 
   node3:
     build: .
-    container_name: lsmdb-node3
+    container_name: node3
     environment:
-      - DATA_DIR=/data
-      - LSMDB_NODE_ADDR=node3:8080
-      - ZK_SERVERS=zookeeper:2181
-    volumes:
-      - ./data/node3:/data
+      - LSMDB_RAFT_ID=3
+      - LSMDB_RAFT_PEERS=1=http://node1:8080,2=http://node2:8080,3=http://node3:8080
+      - LSMDB_ADVERTISE_URL=http://node3:8080
+      - LSMDB_RF=2
+      - LSMDB_VNODES=100
     ports:
-      - "8083:8080"          # с хоста: http://localhost:8083
-    restart: unless-stopped
-    networks:
-      - lsmdb-net
-    depends_on:
-      - zookeeper
-    healthcheck:
-      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:8080/health"]
-      interval: 10s
-      timeout: 5s
-      retries: 3
-
-networks:
-  lsmdb-net:
-    driver: bridge
+      - "8083:8080"

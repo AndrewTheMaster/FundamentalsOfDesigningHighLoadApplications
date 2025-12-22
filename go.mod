@@ -4,7 +4,6 @@ go 1.24
 
 require (
 	github.com/go-chi/chi/v5 v5.2.3
-	github.com/go-zookeeper/zk v1.0.3
 	github.com/goccy/go-yaml v1.18.0
 	github.com/golang/protobuf v1.5.4 // indirect
 	github.com/zhangyunhao116/fastrand v0.3.0 // indirect

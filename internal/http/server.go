@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"lsmdb/pkg/raftadapter"
 	"lsmdb/pkg/store"
+	"lsmdb/pkg/cluster"
 	"net/http"
 	"net/url"
 	"time"
@@ -38,21 +39,28 @@ type iRaftNode interface {
 // Server represents the HTTP server with storage
 type Server struct {
 	node       iRaftNode
-	store      iStoreAPI
+	store      iStoreAPI  // локальный store
+	router     *cluster.Router // для shard-aware GET
 	httpServer *http.Server
 	URL        string
 	addr       string
 }
 
 // NewServer creates a new server instance. Accepts any implementation of iStoreAPI (including *store.Store).
-func NewServer(node iRaftNode, port string) *Server {
+func NewServer(node iRaftNode, st iStoreAPI, router *cluster.Router, port string, advertiseURL string) *Server {
 	if port == "" {
 		port = defaultHTTPPort
 	}
+	if advertiseURL == "" {
+		advertiseURL = "http://localhost:" + port
+	}
+
 	return &Server{
-		node: node,
-		URL:  "http://localhost:" + port,
-		addr: ":" + port,
+		node:   node,
+		store:  st,
+		router: router,
+		URL:    advertiseURL,
+		addr:   ":" + port,
 	}
 }
 
@@ -194,19 +202,39 @@ func (s *Server) handleGet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// shard-aware read: читаем через Router (он пойдёт на живую реплику)
+	if s.router != nil {
+		value, found, err := s.router.Get(key)
+		if err != nil {
+			s.writeJSON(w, http.StatusInternalServerError, NewErrorResponse(err.Error()))
+			return
+		}
+		if !found {
+			s.writeJSON(w, http.StatusNotFound, NewErrorResponse("Key not found"))
+			return
+		}
+		s.writeJSON(w, http.StatusOK, NewValueResponse(value))
+		return
+	}
+
+	// fallback: только локально
+	if s.store == nil {
+		s.writeJSON(w, http.StatusInternalServerError, NewErrorResponse("store is not configured"))
+		return
+	}
+
 	value, found, err := s.store.GetString(key)
 	if err != nil {
 		s.writeJSON(w, http.StatusInternalServerError, NewErrorResponse(err.Error()))
 		return
 	}
-
 	if !found {
 		s.writeJSON(w, http.StatusNotFound, NewErrorResponse("Key not found"))
 		return
 	}
-
 	s.writeJSON(w, http.StatusOK, NewValueResponse(value))
 }
+
 
 func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
 	if redirected, err := s.redirectLeader(w, r); redirected || err != nil {

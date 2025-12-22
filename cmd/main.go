@@ -4,115 +4,206 @@ import (
 	"context"
 	"fmt"
 	"lsmdb/internal/config"
+	httpserver "lsmdb/internal/http"
 	"lsmdb/pkg/cluster"
+	pkgcfg "lsmdb/pkg/config"
 	storecfg "lsmdb/pkg/config"
-	"lsmdb/pkg/rpc"
+	"lsmdb/pkg/raftadapter"
+	rpcclient "lsmdb/pkg/rpc"
 	"lsmdb/pkg/store"
 	"lsmdb/pkg/wal"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
 )
 
-// timeProvider оставлен на будущее, сейчас нам не нужен для Store
-type timeProvider struct{}
+func mustEnv(k string) string {
+	v := strings.TrimSpace(os.Getenv(k))
+	if v == "" {
+		fmt.Printf("%s is not set\n", k)
+		os.Exit(1)
+	}
+	return v
+}
 
-func (tp *timeProvider) Now() time.Time {
-	return time.Now()
+func mustRaftID() uint64 {
+	raw := mustEnv("LSMDB_RAFT_ID")
+	id, err := strconv.ParseUint(raw, 10, 64)
+	if err != nil || id == 0 {
+		fmt.Println("LSMDB_RAFT_ID invalid:", raw)
+		os.Exit(1)
+	}
+	return id
+}
+
+// format: "1=http://node1:8080,2=http://node2:8080,3=http://node3:8080"
+func mustRaftPeers() []pkgcfg.RaftPeerConfig {
+	raw := mustEnv("LSMDB_RAFT_PEERS")
+	parts := strings.Split(raw, ",")
+	out := make([]pkgcfg.RaftPeerConfig, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		kv := strings.SplitN(p, "=", 2)
+		if len(kv) != 2 {
+			fmt.Println("LSMDB_RAFT_PEERS invalid part:", p)
+			os.Exit(1)
+		}
+		id, err := strconv.ParseUint(strings.TrimSpace(kv[0]), 10, 64)
+		if err != nil || id == 0 {
+			fmt.Println("LSMDB_RAFT_PEERS invalid id in:", p)
+			os.Exit(1)
+		}
+		addr := strings.TrimSpace(kv[1])
+		if addr == "" {
+			fmt.Println("LSMDB_RAFT_PEERS empty addr in:", p)
+			os.Exit(1)
+		}
+		out = append(out, pkgcfg.RaftPeerConfig{ID: id, Address: addr})
+	}
+	if len(out) == 0 {
+		fmt.Println("LSMDB_RAFT_PEERS has no peers")
+		os.Exit(1)
+	}
+	return out
+}
+
+func contains(ss []string, x string) bool {
+	for _, s := range ss {
+		if s == x {
+			return true
+		}
+	}
+	return false
 }
 
 func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
-	// high-level конфиг ноды (storage, sharding, replication и т.п.)
 	cfg := config.Default()
+	fmt.Printf("LSMDB starting. DataDir=%s\n", cfg.Storage.DataDir)
 
-	fmt.Printf("LSMDB starting (Lab 5 Sharding + ZK). DataDir=%s\n", cfg.Storage.DataDir)
+	localURL := mustEnv("LSMDB_ADVERTISE_URL") // например http://node1:8080
+	raftID := mustRaftID()
+	peers := mustRaftPeers()
 
-	localAddr := os.Getenv("LSMDB_NODE_ADDR")
-	if localAddr == "" {
-		fmt.Println("LSMDB_NODE_ADDR is not set")
-		os.Exit(1)
-	}
-
-	zkServersEnv := os.Getenv("ZK_SERVERS")
-	if zkServersEnv == "" {
-		fmt.Println("ZK_SERVERS is not set")
-		os.Exit(1)
-	}
-	zkServers := strings.Split(zkServersEnv, ",")
-
-	// --- ZooKeeper membership ---
-	membership, err := cluster.NewZKMembership(zkServers, "/lsmdb", localAddr)
-	if err != nil {
-		fmt.Printf("Failed to connect to ZooKeeper: %v\n", err)
-		os.Exit(1)
-	}
-	defer membership.Close()
-
-	if err := membership.RegisterSelf(); err != nil {
-		fmt.Printf("Failed to register node in ZooKeeper: %v\n", err)
-		os.Exit(1)
-	}
-
-	// первичная сборка кольца по нодам (HashRing over nodes)
-	ring, err := membership.BuildRing(100)
-	if err != nil {
-		fmt.Printf("Failed to build ring from ZooKeeper: %v\n", err)
-		os.Exit(1)
-	}
-	fmt.Println("Initial ring nodes:", ring.ListNodes())
-
-	// --- WAL и конфиг стора ---
+	// --- WAL + store ---
 	journal, err := wal.New(cfg.Storage.WALDir)
 	if err != nil {
 		fmt.Printf("Failed to init WAL: %v\n", err)
 		os.Exit(1)
 	}
 
-	// адаптируем high-level config к конфигу стора
+	// ✅ ВАЖНО: дефолтный конфиг стора берём из pkg/config, а не pkg/store
 	dbCfg := storecfg.Default()
 	dbCfg.DB.Persistence.RootPath = cfg.Storage.DataDir
 
-	// --- локальное LSM-хранилище ---
 	db, err := store.New(&dbCfg, journal)
 	if err != nil {
-		panic(err)
+		fmt.Printf("Failed to init store: %v\n", err)
+		os.Exit(1)
 	}
 
-	// --- Router с кольцом по нодам ---
+	// --- Raft (одна группа на весь кластер) ---
+	raftCfg := &pkgcfg.RaftConfig{
+		ID:            raftID,
+		ElectionTick:  10,
+		HeartbeatTick: 1,
+		Peers:         peers,
+	}
+
+	raftNode, err := raftadapter.NewNode(raftCfg, db)
+	if err != nil {
+		fmt.Printf("Failed to init raft node: %v\n", err)
+		os.Exit(1)
+	}
+
+	// --- Ring по нодам (consistent hashing) ---
+	vnodes := 100
+	if raw := strings.TrimSpace(os.Getenv("LSMDB_VNODES")); raw != "" {
+		if n, err := strconv.Atoi(raw); err == nil && n > 0 {
+			vnodes = n
+		}
+	}
+
+	ring := cluster.NewHashRing(vnodes)
+	for _, p := range peers {
+		ring.AddNode(p.Address) // Должно совпадать форматом с localURL и rpc target (http://nodeX:8080)
+	}
+	fmt.Println("Ring nodes:", ring.ListNodes())
+
+	// --- Replication factor ---
+	rf := cfg.Replication.ReplicationFactor
+	if raw := strings.TrimSpace(os.Getenv("LSMDB_RF")); raw != "" {
+		if n, err := strconv.Atoi(raw); err == nil && n > 0 {
+			rf = n
+		}
+	}
+	if rf <= 0 {
+		rf = 1
+	}
+
+	// applyFilter: применять команду только на RF репликах по кольцу
+	raftNode.SetApplyFilter(func(key string) bool {
+		replicas, ok := ring.ReplicasForKey(key, rf)
+		if !ok {
+			return false
+		}
+		return contains(replicas, localURL)
+	})
+
+	// --- Router ---
 	router := &cluster.Router{
-		LocalAddr: localAddr,
+		LocalAddr: localURL,
 		Ring:      ring,
+		RF:        rf,
 		DB:        db,
 		NewClient: func(target string) (cluster.Remote, error) {
-			baseURL := "http://" + target
-			return rpc.NewRemoteStore(baseURL), nil
+			// ✅ ВАЖНО: используй тот конструктор, который у тебя реально есть в pkg/rpc:
+			// Если ты оставила NewHTTPStore — оставь так:
+			return rpcclient.NewHTTPStore(target), nil
+
+			// Если у тебя функция называется NewRemoteStore — тогда замени строку выше на:
+			// return rpcclient.NewRemoteStore(target), nil
 		},
 	}
 
-	// watcher обновляет кольцо при изменении состава нод в ZK
-	membership.RunWatch(ctx, router, 100)
+	// --- HTTP server ---
+	port := "8080"
+	if u := strings.TrimSpace(os.Getenv("LSMDB_PORT")); u != "" {
+		port = u
+	}
 
-	// --- HTTP-сервер поверх Router ---
-	server := rpc.NewServer(router, "8080")
-	if err := server.Start(); err != nil {
+	srv := httpserver.NewServer(
+		raftNode,
+		db,
+		router,
+		port,
+		localURL,
+	)
+
+	// Raft run loop
+	go func() {
+		_ = raftNode.Run(ctx)
+	}()
+
+	if err := srv.Start(); err != nil {
 		fmt.Printf("Failed to start server: %v\n", err)
 		os.Exit(1)
 	}
 
-	fmt.Println("HTTP server is running on :8080 (with ZK-based sharding)")
-	fmt.Println("Press Ctrl+C to stop...")
+	fmt.Printf("HTTP server is running on %s\n", localURL)
 
 	<-ctx.Done()
 
-	if err := server.Stop(); err != nil {
-		fmt.Printf("Error stopping server: %v\n", err)
-	}
-
+	_ = srv.Stop()
+	_ = raftNode.Stop()
 	fmt.Println("LSMDB stopped")
-	os.Exit(0)
+	time.Sleep(200 * time.Millisecond)
 }

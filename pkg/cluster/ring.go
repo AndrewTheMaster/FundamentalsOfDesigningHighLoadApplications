@@ -87,3 +87,41 @@ func (h *HashRing) ListNodes() []string {
 	sort.Strings(result)
 	return result
 }
+
+// ReplicasForKey возвращает список уникальных нод-реплик для key длиной rf.
+// Порядок: owner, далее successors по кольцу.
+// Если rf > количества доступных нод — вернём максимум уникальных.
+func (h *HashRing) ReplicasForKey(key string, rf int) ([]string, bool) {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+
+	if len(h.nodes) == 0 {
+		return nil, false
+	}
+
+	if rf <= 0 {
+		return nil, false
+	}
+
+	hv := hashKey(key)
+	start := sort.Search(len(h.nodes), func(i int) bool { return h.nodes[i] >= hv })
+	if start == len(h.nodes) {
+		start = 0
+	}
+
+	seen := make(map[string]struct{}, rf)
+	out := make([]string, 0, rf)
+
+	// проходим по виртуальным нодам по кругу, пока не соберём rf уникальных
+	for i := 0; i < len(h.nodes) && len(out) < rf; i++ {
+		idx := (start + i) % len(h.nodes)
+		node := h.nodeMap[h.nodes[idx]]
+		if _, ok := seen[node]; ok {
+			continue
+		}
+		seen[node] = struct{}{}
+		out = append(out, node)
+	}
+
+	return out, len(out) > 0
+}
