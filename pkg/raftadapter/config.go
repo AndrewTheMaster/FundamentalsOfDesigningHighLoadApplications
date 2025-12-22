@@ -24,7 +24,6 @@ func toRaftConfig(cfg *config.RaftConfig) *raft.Config {
 		MaxInflightMsgs: maxInflight,
 		MaxSizePerMsg:   maxSize,
 
-		// хорошие практики
 		CheckQuorum: true,
 		PreVote:     true,
 	}

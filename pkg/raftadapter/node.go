@@ -316,3 +316,7 @@ func (n *Node) Stop() error {
 func (n *Node) SetApplyFilter(fn func(key string) bool) {
 	n.applyFilter = fn
 }
+
+func (n *Node) LeaderID() uint64 {
+	return n.underlying.Status().Lead
+}

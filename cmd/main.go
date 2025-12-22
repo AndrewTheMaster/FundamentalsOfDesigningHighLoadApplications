@@ -73,6 +73,42 @@ func mustRaftPeers() []pkgcfg.RaftPeerConfig {
 	return out
 }
 
+// format: "1=http://localhost:8081,2=http://localhost:8082,3=http://localhost:8083"
+func parsePeerMap(raw string) map[uint64]string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+	parts := strings.Split(raw, ",")
+	out := make(map[uint64]string, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		kv := strings.SplitN(p, "=", 2)
+		if len(kv) != 2 {
+			fmt.Println("LSMDB_PUBLIC_PEERS invalid part:", p)
+			os.Exit(1)
+		}
+		id, err := strconv.ParseUint(strings.TrimSpace(kv[0]), 10, 64)
+		if err != nil || id == 0 {
+			fmt.Println("LSMDB_PUBLIC_PEERS invalid id in:", p)
+			os.Exit(1)
+		}
+		addr := strings.TrimSpace(kv[1])
+		if addr == "" {
+			fmt.Println("LSMDB_PUBLIC_PEERS empty addr in:", p)
+			os.Exit(1)
+		}
+		out[id] = addr
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
 func contains(ss []string, x string) bool {
 	for _, s := range ss {
 		if s == x {
@@ -92,6 +128,7 @@ func main() {
 	localURL := mustEnv("LSMDB_ADVERTISE_URL") // например http://node1:8080
 	raftID := mustRaftID()
 	peers := mustRaftPeers()
+	publicPeers := parsePeerMap(os.Getenv("LSMDB_PUBLIC_PEERS"))
 
 	// --- WAL + store ---
 	journal, err := wal.New(cfg.Storage.WALDir)
@@ -186,6 +223,7 @@ func main() {
 		router,
 		port,
 		localURL,
+		publicPeers,
 	)
 
 	// Raft run loop

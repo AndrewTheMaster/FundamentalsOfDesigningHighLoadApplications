@@ -7,6 +7,7 @@ services:
     environment:
       - LSMDB_RAFT_ID=1
       - LSMDB_RAFT_PEERS=1=http://node1:8080,2=http://node2:8080,3=http://node3:8080
+      - LSMDB_PUBLIC_PEERS=1=http://localhost:8081,2=http://localhost:8082,3=http://localhost:8083
       - LSMDB_ADVERTISE_URL=http://node1:8080
       - LSMDB_RF=2
       - LSMDB_VNODES=100
@@ -19,6 +20,7 @@ services:
     environment:
       - LSMDB_RAFT_ID=2
       - LSMDB_RAFT_PEERS=1=http://node1:8080,2=http://node2:8080,3=http://node3:8080
+      - LSMDB_PUBLIC_PEERS=1=http://localhost:8081,2=http://localhost:8082,3=http://localhost:8083
       - LSMDB_ADVERTISE_URL=http://node2:8080
       - LSMDB_RF=2
       - LSMDB_VNODES=100
@@ -31,6 +33,7 @@ services:
     environment:
       - LSMDB_RAFT_ID=3
       - LSMDB_RAFT_PEERS=1=http://node1:8080,2=http://node2:8080,3=http://node3:8080
+      - LSMDB_PUBLIC_PEERS=1=http://localhost:8081,2=http://localhost:8082,3=http://localhost:8083
       - LSMDB_ADVERTISE_URL=http://node3:8080
       - LSMDB_RF=2
       - LSMDB_VNODES=100

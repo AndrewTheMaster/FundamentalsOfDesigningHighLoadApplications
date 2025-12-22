@@ -29,9 +29,10 @@ type iStoreAPI interface {
 type iRaftNode interface {
 	IsLeader() bool
 	LeaderAddr() string
+	LeaderID() uint64
+
 	Execute(ctx context.Context, cmd raftadapter.Cmd) error
 	Handle(ctx context.Context, message raftpb.Message) error
-
 	Run(ctx context.Context) error
 	Stop() error
 }
@@ -41,13 +42,14 @@ type Server struct {
 	node       iRaftNode
 	store      iStoreAPI  // локальный store
 	router     *cluster.Router // для shard-aware GET
+	publicPeers map[uint64]string
 	httpServer *http.Server
 	URL        string
 	addr       string
 }
 
 // NewServer creates a new server instance. Accepts any implementation of iStoreAPI (including *store.Store).
-func NewServer(node iRaftNode, st iStoreAPI, router *cluster.Router, port string, advertiseURL string) *Server {
+func NewServer(node iRaftNode, st iStoreAPI, router *cluster.Router, port string, advertiseURL string, publicPeers map[uint64]string) *Server {
 	if port == "" {
 		port = defaultHTTPPort
 	}
@@ -61,6 +63,7 @@ func NewServer(node iRaftNode, st iStoreAPI, router *cluster.Router, port string
 		router: router,
 		URL:    advertiseURL,
 		addr:   ":" + port,
+		publicPeers: publicPeers,
 	}
 }
 
@@ -134,11 +137,17 @@ func (s *Server) redirectLeader(w http.ResponseWriter, r *http.Request) (bool, e
 	if !s.node.IsLeader() {
 		leaderAddr := s.node.LeaderAddr()
 		if leaderAddr == "" {
-			// leader unknown yet — don't redirect, allow local handling
 			return false, nil
 		}
 
-		// Avoid redirect loop when leaderAddr equals this server's URL
+		// если настроены publicPeers — редиректим наружу
+		if s.publicPeers != nil {
+			if pub := s.publicPeers[s.node.LeaderID()]; pub != "" {
+				leaderAddr = pub
+			}
+		}
+
+		// защита от циклов
 		if leaderAddr == s.URL {
 			return false, nil
 		}
@@ -149,11 +158,16 @@ func (s *Server) redirectLeader(w http.ResponseWriter, r *http.Request) (bool, e
 			return false, fmt.Errorf("failed to join leader path: %w", err)
 		}
 
+		if r.URL.RawQuery != "" {
+			leaderURL = leaderURL + "?" + r.URL.RawQuery
+		}
+
 		http.Redirect(w, r, leaderURL, http.StatusTemporaryRedirect)
 		return true, nil
 	}
 	return false, nil
 }
+
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	s.writeJSON(w, http.StatusOK, NewOKResponse())
