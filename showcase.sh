@@ -47,18 +47,36 @@ wait_health() {
 #  - лидер на PUT отвечает 200
 #  - фолловер отвечает 307 (redirect to leader)
 detect_leader() {
-  local key="__leader_probe__" value="probe"
-  for u in "${NODES[@]}"; do
-    local code
-    code="$(curl -s -o /dev/null -w "%{http_code}" \
-      --connect-timeout 2 --max-time 4 \
-      -X PUT "$u/api/string" -d "key=$key&value=$value" || true)"
-    if [[ "$code" == "200" ]]; then
-      echo "$u"; return 0
-    fi
+  local tries="${1:-30}"   # 30 * 0.5s = 15s
+  local i u code loc
+  for ((i=0; i<tries; i++)); do
+    for u in "${NODES[@]}"; do
+      loc="$(curl -s -o /dev/null -D - \
+        --connect-timeout 1 --max-time 2 \
+        -X PUT "$u/api/string" -d "key=__leader_probe__&value=1" \
+        | awk -F': ' 'tolower($1)=="location"{print $2}' | tr -d '\r')"
+      code="$(curl -s -o /dev/null -w "%{http_code}" \
+        --connect-timeout 1 --max-time 2 \
+        -X PUT "$u/api/string" -d "key=__leader_probe__&value=1" || true)"
+
+      if [[ "$code" == "200" ]]; then
+        echo "$u"
+        return 0
+      fi
+      if [[ "$code" == "307" && -n "$loc" ]]; then
+        if [[ "$loc" == http* ]]; then
+          echo "${loc%/api/string}"
+        else
+          echo "$u" # fallback
+        fi
+        return 0
+      fi
+    done
+    sleep 0.5
   done
-  echo ""; return 1
+  return 1
 }
+
 
 # PUT с редиректом
 put_key() {
@@ -70,9 +88,15 @@ put_key() {
 # PUT без редиректа
 put_key_no_redirect() {
   local base="$1" key="$2" value="$3"
-  curl -fsS --connect-timeout 2 --max-time 8 \
-    -X PUT "$base/api/string" -d "key=$key&value=$value" >/dev/null
+  code="$(curl -s -o /dev/null -w "%{http_code}" \
+    --connect-timeout 2 --max-time 8 \
+    -X PUT "$base/api/string" -d "key=$key&value=$value" || true)"
+  if [[ "$code" != "200" ]]; then
+    err "PUT expected 200 from leader, got HTTP $code at $base (leader may have changed)"
+    return 1
+  fi
 }
+
 
 # Показываем, куда редиректит фолловер
 probe_redirect_location() {
@@ -104,43 +128,17 @@ del_key() {
   local enc
   enc="$(python3 -c "import urllib.parse; print(urllib.parse.quote('''$key'''))")"
 
-  local ok=""
+  # follow redirect to leader if base is follower
+  code="$(curl -s -o /dev/null -w "%{http_code}" \
+    -L --connect-timeout 2 --max-time 8 \
+    -X DELETE "$base/api?key=$enc" || true)"
 
-  # helper: run and capture http_code
-  _try() {
-    local code="$1"; shift
-    local method="$1"; shift
-    local url="$1"; shift
-    local data="${1:-}"
-    local http
-    if [[ -n "$data" ]]; then
-      http="$(curl -s -o /dev/null -w "%{http_code}" \
-        --connect-timeout 2 --max-time 6 \
-        -X "$method" "$url" -d "$data" || true)"
-    else
-      http="$(curl -s -o /dev/null -w "%{http_code}" \
-        --connect-timeout 2 --max-time 6 \
-        -X "$method" "$url" || true)"
-    fi
-    if [[ "$http" == "200" || "$http" == "204" ]]; then
-      ok="$code"
-      return 0
-    fi
-    return 1
-  }
-
-  _try "DELETE /api/string" "DELETE" "$base/api/string?key=$enc" && true
-  if [[ -z "$ok" ]]; then _try "DELETE /api" "DELETE" "$base/api?key=$enc" && true; fi
-  if [[ -z "$ok" ]]; then _try "POST /api/delete" "POST" "$base/api/delete" "key=$key" && true; fi
-  if [[ -z "$ok" ]]; then _try "POST /api/string/delete" "POST" "$base/api/string/delete" "key=$key" && true; fi
-
-  if [[ -n "$ok" ]]; then
-    info "   DELETE succeeded via: $ok ✅"
+  if [[ "$code" == "200" || "$code" == "204" ]]; then
+    info "   DELETE succeeded via: DELETE /api ✅"
     return 0
   fi
 
-  err "DELETE failed: no supported delete endpoint found (got 405/404/etc)."
-  err "Tried: DELETE /api/string, DELETE /api, POST /api/delete, POST /api/string/delete"
+  err "DELETE failed: expected 200/204, got HTTP $code"
   return 1
 }
 
@@ -186,6 +184,12 @@ if [[ -n "$leader" ]]; then
   echo
 fi
 
+# re-check leader right before CRUD (leader may change during startup)
+leader="$(detect_leader || true)"
+if [[ -n "$leader" ]]; then BASE="$leader"; fi
+info "BASE re-checked before CRUD: $BASE"
+
+
 # CRUD
 info "4) PUT/GET/DELETE basic flow"
 
@@ -214,7 +218,7 @@ done
 info "   DELETE via BASE (auto-detect endpoint)"
 del_key "$BASE" "$k"
 
-info "   GET after delete (expected: 404-like codes)"
+info "   GET after delete (expected 404)"
 for u in "${NODES[@]}"; do
   code="$(curl -s -o /dev/null -w "%{http_code}" \
     --connect-timeout 2 --max-time 4 \
@@ -242,10 +246,8 @@ fi
 info "   Stopping leader container: $leader_to_stop"
 docker compose stop "$leader_to_stop"
 
-sleep 3
-
 info "   Detect new leader among remaining nodes"
-new_leader="$(detect_leader || true)"
+new_leader="$(detect_leader 40 || true)"  # до 20s
 if [[ -n "$new_leader" ]]; then
   info "New leader: $new_leader ($(node_name_from_url "$new_leader")) ✅"
 else
@@ -253,16 +255,26 @@ else
 fi
 
 info "   Read survival key from remaining nodes (should succeed if RF>=2)"
+ok=0
 for u in "${NODES[@]}"; do
-  if [[ "$u" == *"$leader_to_stop"* ]]; then continue; fi
+  # skip stopped node in host mode correctly:
+  if [[ "$leader_to_stop" == "node1" && "$u" == "http://localhost:8081" ]]; then continue; fi
+  if [[ "$leader_to_stop" == "node2" && "$u" == "http://localhost:8082" ]]; then continue; fi
+  if [[ "$leader_to_stop" == "node3" && "$u" == "http://localhost:8083" ]]; then continue; fi
+
   code="$(curl -s -o /dev/null -w "%{http_code}" \
     --connect-timeout 2 --max-time 4 \
     "$u/api/string?key=$k2" || true)"
   body="$(curl -s --connect-timeout 2 --max-time 4 \
     "$u/api/string?key=$k2" || true)"
   info "   GET $u -> HTTP $code  body: $body"
+  if [[ "$code" == "200" ]]; then ok=1; fi
 done
-echo
+
+if [[ "$ok" != "1" ]]; then
+  err "Survival key not readable from any remaining node (expected at least one 200)"
+  exit 1
+fi
 
 # Recovery
 info "6) Recovery: start stopped node, check it becomes healthy and can read data"

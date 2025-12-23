@@ -187,7 +187,7 @@ func (n *Node) applyEntry(entry raftpb.Entry) error {
 
 	key := string(cmd.Key)
 
-    // изменения из-за шардирование+репликация
+	// изменения из-за шардирование+репликация
 	// Нода применяет запись, только если она "реплика" для этого ключа.
 	if n.applyFilter != nil && !n.applyFilter(key) {
 		// важно: для лидера нужно всё равно разбудить ожидание результата
@@ -226,14 +226,19 @@ func (n *Node) notifyProposalResult(cmdID uuid.UUID, result proposeResult) error
 	n.proposalsMu.RUnlock()
 
 	if !ok {
-		if n.IsLeader() {
-			slog.Warn("error: proposal result channel not found", "cmd_id", cmdID)
-			return fmt.Errorf("proposal result channel not found")
-		}
+		// - follower применяет запись (у него не было proposals[cmdID])
+		// - лидерский Execute уже завершился (timeout/cancel), defer удалил proposals[cmdID]
+		// - лидер сменился, а apply пришёл позже
+		slog.Debug("proposal result channel not found (ignored)", "cmd_id", cmdID, "is_leader", n.IsLeader())
 		return nil
 	}
 
-	resultChan <- result
+	// не блокируем apply, если вдруг слушатель уже ушёл
+	select {
+	case resultChan <- result:
+	default:
+		slog.Debug("proposal result channel is full (ignored)", "cmd_id", cmdID)
+	}
 	return nil
 }
 

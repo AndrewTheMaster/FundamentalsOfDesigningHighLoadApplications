@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"time"
 
 	"lsmdb/pkg/cluster"
 	rpcclient "lsmdb/pkg/rpc"
@@ -111,46 +112,80 @@ func main() {
 	fmt.Println("\n[STEP 4] Check keys after node failure (try replicas by ring)")
 	var okCount, notFound, errCount int
 
+	httpc := &nethttp.Client{
+		Timeout: 2 * time.Second,
+		CheckRedirect: func(req *nethttp.Request, via []*nethttp.Request) error {
+			if len(via) >= 10 {
+				return fmt.Errorf("too many redirects")
+			}
+			return nil
+		},
+	}
+
+	const debugLimit = 10
+	debugPrinted := 0
+
 	for i := 0; i < totalKeys; i++ {
 		key := fmt.Sprintf("key-%d", i)
 
 		reps, ok := ring.ReplicasForKey(key, rf)
 		if !ok || len(reps) == 0 {
-			fmt.Printf("[check] ring empty for key=%s\n", key)
 			errCount++
+			if debugPrinted < debugLimit {
+				fmt.Printf("[debug] key=%s ring returned empty replica-set\n", key)
+				debugPrinted++
+			}
 			continue
 		}
 
-		var got bool
+		got := false
+		saw404 := false
+		transportErr := false
 		var lastErr error
 
 		for _, addr := range reps {
 			u := addr + "/api/string?key=" + url.QueryEscape(key)
-			resp, err := nethttp.Get(u)
+			resp, err := httpc.Get(u)
 			if err != nil {
+				transportErr = true
 				lastErr = err
 				continue
 			}
 			body, _ := io.ReadAll(resp.Body)
 			_ = resp.Body.Close()
 
-			if resp.StatusCode == nethttp.StatusOK {
+			switch resp.StatusCode {
+			case nethttp.StatusOK:
 				okCount++
 				got = true
+
+			case nethttp.StatusNotFound:
+				saw404 = true
+				lastErr = fmt.Errorf("404 %s", strings.TrimSpace(string(body)))
+
+			case nethttp.StatusTemporaryRedirect, nethttp.StatusPermanentRedirect:
+				lastErr = fmt.Errorf("%d redirect body=%s", resp.StatusCode, strings.TrimSpace(string(body)))
+
+			default:
+				lastErr = fmt.Errorf("status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(body)))
+			}
+
+			if got {
 				break
 			}
-			if resp.StatusCode == nethttp.StatusNotFound {
-				lastErr = fmt.Errorf("404 %s", string(body))
-				continue
-			}
-			lastErr = fmt.Errorf("status=%d body=%s", resp.StatusCode, string(body))
 		}
 
 		if !got {
-			if lastErr != nil {
-				errCount++
-			} else {
+			// чистый NotFound: все реплики ответили 404 и не было сетевых ошибок
+			if saw404 && !transportErr && lastErr != nil && strings.HasPrefix(lastErr.Error(), "404 ") {
 				notFound++
+			} else {
+				errCount++
+			}
+
+			if debugPrinted < debugLimit {
+				fmt.Printf("[debug] key=%s reps=%v transportErr=%v lastErr=%v\n", key, reps, transportErr, lastErr)
+				debugPrinted++
 			}
 		}
 	}

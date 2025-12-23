@@ -6,11 +6,12 @@ import (
 	"lsmdb/internal/config"
 	httpserver "lsmdb/internal/http"
 	"lsmdb/pkg/cluster"
-	cfgpkg "lsmdb/pkg/config"
+	pkgcfg "lsmdb/pkg/config"
 	"lsmdb/pkg/raftadapter"
 	rpcclient "lsmdb/pkg/rpc"
 	"lsmdb/pkg/store"
 	"lsmdb/pkg/wal"
+	"net/http"
 	"os"
 	"os/signal"
 	"strconv"
@@ -117,6 +118,36 @@ func contains(ss []string, x string) bool {
 	return false
 }
 
+func startHealthLoop(ctx context.Context, router *cluster.Router, peers []pkgcfg.RaftPeerConfig, interval time.Duration) {
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+
+		client := &http.Client{Timeout: 800 * time.Millisecond}
+
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				alive := make([]string, 0, len(peers))
+				for _, p := range peers {
+					base := strings.TrimRight(p.Address, "/")
+					resp, err := client.Get(base + "/health")
+					if resp != nil {
+						_ = resp.Body.Close()
+					}
+					if err == nil && resp != nil && resp.StatusCode >= 200 && resp.StatusCode < 300 {
+						alive = append(alive, base)
+					}
+				}
+				router.SetAlive(alive)
+				fmt.Println("[health] alive:", alive)
+			}
+		}
+	}()
+}
+
 func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
@@ -137,7 +168,7 @@ func main() {
 	}
 
 	// ✅ ВАЖНО: дефолтный конфиг стора берём из pkg/config, а не pkg/store
-	dbCfg := storecfg.Default()
+	dbCfg := pkgcfg.Default()
 	dbCfg.DB.Persistence.RootPath = cfg.Storage.DataDir
 
 	db, err := store.New(&dbCfg, journal)
@@ -209,6 +240,9 @@ func main() {
 			// return rpcclient.NewRemoteStore(target), nil
 		},
 	}
+
+	// start health-based ring updates (dead nodes removed from replica-set)
+    startHealthLoop(ctx, router, peers, 2*time.Second)
 
 	// --- HTTP server ---
 	port := "8080"

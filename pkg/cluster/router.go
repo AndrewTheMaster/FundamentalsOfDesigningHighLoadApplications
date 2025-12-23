@@ -15,21 +15,20 @@ type Remote interface {
 // фабрика удалённых клиентов
 type ClientFactory func(target string) (Remote, error)
 
-
 type Router struct {
+	mu        sync.RWMutex
 	LocalAddr string
 	Ring      *HashRing
 	RF        int
-
-	// локальный KV store для чтения (если нода — реплика)
-	DB interface {
+	DB        interface {
 		PutString(key, value string) error
 		GetString(key string) (string, bool, error)
 		Delete(key string) error
 	}
+	NewClient func(target string) (Remote, error)
 
-	NewClient ClientFactory
-	mu sync.RWMutex
+	aliveMu sync.RWMutex
+	alive   map[string]bool // addr -> alive
 }
 
 func (r *Router) owner(key string) (string, error) {
@@ -57,6 +56,26 @@ func (r *Router) UpdateRing(newRing *HashRing) {
 		return
 	}
 	fmt.Println("[router] ring updated; nodes:", newRing.ListNodes())
+}
+
+func (r *Router) SetAlive(addrs []string) {
+	m := make(map[string]bool, len(addrs))
+	for _, a := range addrs {
+		m[a] = true
+	}
+	r.aliveMu.Lock()
+	r.alive = m
+	r.aliveMu.Unlock()
+}
+
+func (r *Router) isAlive(addr string) bool {
+	r.aliveMu.RLock()
+	defer r.aliveMu.RUnlock()
+	// если alive ещё не настроен — считаем всех живыми (стартовое поведение)
+	if r.alive == nil {
+		return true
+	}
+	return r.alive[addr]
 }
 
 func (r *Router) log(method, key, target string, local bool) {
@@ -144,11 +163,33 @@ func (r *Router) replicasForKey(key string) ([]string, error) {
 		return nil, fmt.Errorf("RF must be > 0")
 	}
 
-	replicas, ok := ring.ReplicasForKey(key, rf)
-	if !ok || len(replicas) == 0 {
-		return nil, fmt.Errorf("ring is empty")
+	// кандидаты — все ноды в порядке кольца (owner+successors), уникальные
+	candidates, ok := ring.ReplicasForKey(key, max(rf, len(ring.ListNodes())))
+	if !ok || len(candidates) == 0 {
+		return nil, fmt.Errorf("empty replica candidates")
 	}
-	return replicas, nil
+
+	// фильтруем живых, пока не набрали rf
+	out := make([]string, 0, rf)
+	seen := map[string]bool{}
+	for _, a := range candidates {
+		if seen[a] {
+			continue
+		}
+		seen[a] = true
+		if r.isAlive(a) {
+			out = append(out, a)
+			if len(out) == rf {
+				break
+			}
+		}
+	}
+
+	// если живых меньше rf — возвращаем сколько есть (это нормально для деградации)
+	if len(out) == 0 {
+		return nil, fmt.Errorf("no alive replicas for key=%s", key)
+	}
+	return out, nil
 }
 
 func contains(ss []string, x string) bool {
@@ -161,48 +202,84 @@ func contains(ss []string, x string) bool {
 }
 
 // Put: отправляем на "первую реплику" (или на себя, если мы в replica set).
-// Сервер сам редиректит на raft-лидера и делает Execute через Raft. :contentReference[oaicite:9]{index=9}
 func (r *Router) Put(key, value string) error {
 	replicas, err := r.replicasForKey(key)
 	if err != nil {
 		return err
 	}
 
-	// предпочтение локали (если мы реплика) — меньше hops
-	target := replicas[0]
+	// 1) порядок попыток: сначала локальная (если мы реплика), потом остальные
+	targets := make([]string, 0, len(replicas))
 	if contains(replicas, r.LocalAddr) {
-		target = r.LocalAddr
+		targets = append(targets, r.LocalAddr)
+	}
+	for _, a := range replicas {
+		if a != r.LocalAddr {
+			targets = append(targets, a)
+		}
 	}
 
-	if target == r.LocalAddr {
-		// важно: локальный PUT должен идти через тот же HTTP API/raft,
-		// иначе мы обойдём Raft. Поэтому локально мы тоже используем Remote,
-		// либо вызываем внутренний handler напрямую (не советую).
+	// 2) пробуем по очереди
+	var lastErr error
+	for _, target := range targets {
+		local := target == r.LocalAddr
+		r.log("PUT", key, target, local)
+
+		cl, err := r.NewClient(target)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+
+		if err := cl.PutString(key, value); err == nil {
+			return nil
+		} else {
+			lastErr = err
+			continue
+		}
 	}
 
-	cl, err := r.NewClient(target)
-	if err != nil {
-		return fmt.Errorf("router: create client: %w", err)
-	}
-	return cl.PutString(key, value)
+	return fmt.Errorf("PUT failed for key=%s: all replicas unreachable, lastErr=%v", key, lastErr)
 }
 
+// Delete: пытаемся удалить через любую живую реплику из replica-set.
+// Дальше удаление также должно пройти через Raft.
 func (r *Router) Delete(key string) error {
 	replicas, err := r.replicasForKey(key)
 	if err != nil {
 		return err
 	}
 
-	target := replicas[0]
+	targets := make([]string, 0, len(replicas))
 	if contains(replicas, r.LocalAddr) {
-		target = r.LocalAddr
+		targets = append(targets, r.LocalAddr)
+	}
+	for _, a := range replicas {
+		if a != r.LocalAddr {
+			targets = append(targets, a)
+		}
 	}
 
-	cl, err := r.NewClient(target)
-	if err != nil {
-		return fmt.Errorf("router: create client: %w", err)
+	var lastErr error
+	for _, target := range targets {
+		local := target == r.LocalAddr
+		r.log("DELETE", key, target, local)
+
+		cl, err := r.NewClient(target)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+
+		if err := cl.Delete(key); err == nil {
+			return nil
+		} else {
+			lastErr = err
+			continue
+		}
 	}
-	return cl.Delete(key)
+
+	return fmt.Errorf("DELETE failed for key=%s: all replicas unreachable, lastErr=%v", key, lastErr)
 }
 
 // Get: читаем с любой живой реплики, локально — если мы в replica set.
