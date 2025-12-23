@@ -3,253 +3,381 @@
 ![Architecture photo](docs/images/photo_2025-09-18_17-47-05.jpg)
 
 This repository contains a learning-oriented LSM-Tree key-value database implemented in Go. It is structured across five lab stages with a simplified architecture for educational purposes.
-
-## Labs Scope
-- **Lab 1**: Public interfaces and internal component interfaces - **COMPLETED**
-- **Lab 2**: Local implementation of storage engine (memtable, persistence layer) - **COMPLETED**
-- **Lab 3**: RPC exposure (REST API) and hosting - **COMPLETED**
-- **Lab 4**: Replication - **PENDING**
-- **Lab 5**: Sharding with Consistent Hashing and ZooKeeper Membership - **COMPLETED**
-
-## Current Implementation (Lab 5)
-The project now operates as a distributed cluster consisting of multiple LSMDB nodes that automatically discover each other, shard data, route requests, and rebalance on node failures.
-
-### **LSM-Tree Architecture Implementation**
-
-**LSM-Tree Core Components (Labs 1–3)**
-- **Memtable**: In-memory sorted storage with WAL for durability
-- **SSTables**: Multi-level storage with blocks, indexes, and bloom filters  
-- **Compaction**: Automatic level-based compaction strategy
-- **Manifest**: Metadata management for tables and levels
-- **REST API**: unified HTTP interface (PUT, GET, DELETE)
-- **Docker**: multi-stage build & containerized execution
-
-**Features Implemented:**
-- **Full LSM-tree**: Memtable → SSTables → Levels → Compaction
-- **Durability**: WAL (Write-Ahead Log) for crash recovery
-- **Performance**: Bloom filters, block cache, binary search
-- **Network API**: REST HTTP server with health endpoints
-- **Containerization**: Docker with multi-stage build
-- **Testing**: Comprehensive test coverage
-- **Production Ready**: Error handling, logging, graceful shutdown
-
-# **Distributed Components (Lab 5)**
-
-## ⭐ **Router (Local vs Remote Routing)**
-
-The Router is the heart of distributed LSMDB:
-
-```
-Client → Router → HashRing → Local or Remote store
-```
-
-Each operation logs where it goes:
-
-```
-[router] PUT    key=user:1 → node3:8080 (remote)
-[router] GET    key=user:1 → node1:8080 (local)
-```
-
-## ⭐ **Consistent Hashing Ring (with Virtual Nodes)**
-
-Implemented in `pkg/cluster/ring.go`, providing:
-
-* N virtual nodes per physical node
-* stable hashing
-* minimal key movement on node join/leave
-* natural load balancing
-
-Mapping:
-
-```
-key → crc32(key) → nearest node clockwise
-```
-
-## ⭐ **ZooKeeper-Based Membership**
-
-Nodes automatically join/leave the cluster:
-
-1. Node creates ephemeral znode under `/lsmdb/nodes/<addr>`
-2. Node watches the directory for changes
-3. On membership event → rebuilds hash ring
-4. Ephemeral znodes disappear on crash → cluster rebalances
-
-Benefits:
-
-* zero manual configuration
-* self-healing cluster
-* automatic failover
-
-
-## Implementation Status:
-
-**Fully Working:**
-
-- Complete LSM engine
-- WAL + SSTable persistence
-- REST network interface
-- Multi-node cluster
-- Sharding and routing
-- Virtual-node consistent hashing
-- ZooKeeper-based discovery
-- Automatic ring rebuilding on failures
-- Client for testing distributed behavior
-
-**Partially Working:**
-- Compaction needs optimization
-- Concurrency in SSTable readers requires refinement
-- SSTable index loading can be optimized
-- Lab 4 (Raft)
-
-###  **Project Structure**
-```
-lsmdb/
-├── cmd/
-│   ├── main.go            # Node entrypoint: LSM engine + ZooKeeper + Router + RPC
-│   └── demo/              # Client demo tool for testing routing and failures
-│       └── main.go
-├── pkg/
-│   ├── memtable/              # In-memory storage
-│   │   ├── memtable.go        # Core memtable logic
-│   │   ├── sorted_set.go      # Sorted collection implementation
-│   │   └── item.go            # Data structures
-│   ├── cluster/               # Router, HashRing, ZooKeeper membership
-│   ├── rpc/                   # HTTP API (REST)
-│   ├── store/                 # High-level API
-│   │   ├── store.go           # Main Store implementation
-│   │   ├── store_test.go      # Comprehensive tests
-│   │   ├── item.go            # Store-specific items
-│   │   └── types.go           # Value type definitions
-│   └── persistance/            # Persistence layer
-│       ├── store.go           # Storage implementation
-│       ├── sstable.go         # SSTable interfaces
-│       └── iterator.go        # Iteration support
-└── internal/config/            # Configuration
-```
-
-# **Distributed Testing (Lab 5)**
-
-## Launch 3-node cluster + ZooKeeper:
-
-```bash
-docker-compose up --build
-```
-
-Nodes register:
-
-```
-/lsmdb/nodes/node1:8080
-/lsmdb/nodes/node2:8080
-/lsmdb/nodes/node3:8080
-```
-
-Each node outputs routing logs:
-```
-[router] PUT key=user:3 → node2:8080 (remote)
-```
 ---
 
-# **Demo Client (sharding test)**
+## Project Scope & Lab Status
 
-Run:
+| Lab       | Topic                                    | Status          |
+| --------- | ---------------------------------------- | --------------- |
+| Lab 1     | Public interfaces, basic architecture    | ✅ Completed     |
+| Lab 2     | Storage engine (Memtable, WAL, SSTables) | ✅ Completed     |
+| Lab 3     | REST API & networking                    | ✅ Completed     |
+| **Lab 4** | **Replication with Raft**                | ✅ **Completed** |
+| **Lab 5** | **Sharding & distributed routing**       | ✅ **Completed** |
+
+Labs 4 and 5 are implemented together as a **replicated Raft cluster with distributed request routing**.
+
+---
+
+## High-Level Architecture
+
+```
+Client
+  │
+  ▼
+HTTP API (REST)
+  │
+  ▼
+Router ──► Leader (Raft)
+   │          │
+   │          ▼
+   │      Replicated Log
+   │          │
+   ▼          ▼
+Followers ◄── Apply Entries
+```
+
+**Key properties:**
+
+* Single leader per Raft group
+* Followers redirect write requests (HTTP 307)
+* Reads are served by all nodes
+* Automatic leader re-election on failure
+* Log replay and state catch-up on recovery
+
+---
+
+## LSM-Tree Storage Engine
+
+Implemented across Labs 1–3.
+
+**Components:**
+
+* **Memtable** — in-memory sorted structure
+* **WAL** — write-ahead log for durability
+* **SSTables** — immutable on-disk tables
+* **Bloom filters** — fast negative lookups
+* **Compaction** — level-based merging
+
+**Data flow:**
+
+```
+PUT → Memtable → WAL → SSTable → Compaction
+```
+
+---
+
+## Raft-Based Replication (Lab 4)
+
+Replication is implemented using the **Raft consensus algorithm**.
+
+### Features:
+
+* Leader election
+* Log replication
+* Commit & apply semantics
+* Automatic failover
+* State recovery after node restart
+
+### Client behavior:
+
+* **PUT / DELETE**:
+
+  * Sent to leader
+  * Followers respond with `307 Temporary Redirect`
+* **GET**:
+
+  * Served by any node
+
+---
+
+## Sharding and Request Routing (Lab 5)
+
+Sharding in LSMDB is implemented using **Consistent Hashing** and a centralized **Router** component.
+The goal of sharding is to evenly distribute keys across nodes while minimizing key movement during topology changes.
+
+### High-Level Flow
+
+```
+Client
+  │
+  ▼
+Router
+  │
+  ▼
+Consistent Hash Ring
+  │
+  ▼
+Shard Owner Node (Raft leader)
+```
+
+Each incoming request follows this pipeline:
+
+```
+key → hash(key) → shard → responsible node → local or remote execution
+```
+
+---
+
+### Consistent Hash Ring
+
+The hash ring is implemented with the following properties:
+
+* Each physical node owns multiple **virtual nodes**
+* Keys are mapped clockwise to the nearest virtual node
+* Node join/leave causes minimal key redistribution
+* Load is evenly balanced across nodes
+
+Mapping logic:
+
+```
+shard = hash(key) mod ring_size
+```
+
+This allows:
+
+* predictable key placement
+* horizontal scalability
+* graceful rebalancing on node failures
+
+---
+
+### Router Logic
+
+The **Router** is responsible for deciding where a request should be executed.
+
+For each operation (`PUT`, `GET`, `DELETE`):
+
+1. Compute shard ID using consistent hashing
+2. Determine responsible node for the shard
+3. If shard is local → execute locally
+4. If shard is remote → forward request to target node
+5. For write operations:
+
+   * if node is follower → return `307 Temporary Redirect`
+   * client retries on leader
+
+Example routing log:
+
+```
+[router] PUT key=user:42 → shard=3 → node2 (remote)
+[router] GET key=user:42 → shard=3 → node1 (local)
+```
+
+---
+
+### Interaction with Raft Replication
+
+Sharding and replication are **orthogonal mechanisms**:
+
+* **Sharding** determines *which node group owns the key*
+* **Raft** ensures *replicated consistency inside that group*
+
+In the current implementation:
+
+* Each key is routed to exactly one shard
+* Each shard is replicated using Raft
+* Writes go through the shard leader
+* Reads can be served by any replica
+
+This separation allows:
+
+* clean architecture
+* independent scaling of shards
+* fault tolerance at shard level
+
+---
+
+## REST API
+
+### Endpoints
+
+| Method | Endpoint                | Description          |
+| ------ | ----------------------- | -------------------- |
+| PUT    | `/api/string`           | Insert or update key |
+| GET    | `/api/string?key=...`   | Retrieve value       |
+| DELETE | implementation-specific | Delete key           |
+| GET    | `/health`               | Node health check    |
+
+**Redirect example:**
+
+```
+HTTP/1.1 307 Temporary Redirect
+Location: http://localhost:8081/api/string
+```
+
+---
+
+## Running the Cluster
+
+### Build & start 3-node cluster
 
 ```bash
+docker compose up -d --build
+```
+
+Nodes are exposed on:
+
+* `http://localhost:8081`
+* `http://localhost:8082`
+* `http://localhost:8083`
+
+---
+
+## Automated Demo Scenario (Main Entry Point)
+
+### showcase.sh — **primary demo script**
+
+This script fully automates the demonstration required for submission.
+
+```bash
+chmod +x showcase.sh
+./showcase.sh host
+```
+
+### What the showcase demonstrates:
+
+1. Cluster startup
+2. Health check on all nodes
+3. Leader detection
+4. PUT request handling
+5. Redirect from follower to leader
+6. GET from all nodes
+7. DELETE operation
+8. Leader failure (container stop)
+9. Leader re-election
+10. Continued availability of data
+11. Node recovery and log catch-up
+
+This script is **safe to run from host** and does not rely on internal Docker DNS.
+
+---
+
+## Failure Handling Example
+
+```bash
+docker compose stop node1
+```
+
+Expected behavior:
+
+* New leader is elected
+* Writes continue via new leader
+* Reads remain available
+* Restarted node replays log and catches up
+
+---
+
+## Demo Client (Replication & Sharding Test)
+
+In addition to the automated `showcase.sh`, the project provides a demo client for manual testing of sharding and replication behavior.
+
+### Running demo with replication factor
+
+```bash
+DEMO_NODES="http://localhost:8081,http://localhost:8082,http://localhost:8083" DEMO_RF=2 \
 go run ./cmd/demo http://localhost:8081
 ```
 
-The demo:
+Where:
 
-* inserts 100 keys
-* retrieves several keys
-* prints routing logs
-* reconstructs the ring
-* computes distribution:
+* `DEMO_RF` — replication factor (number of replicas per key)
+* `http://localhost:8081` — entry node (router)
 
-```
-node1:8080 → 34 keys
-node2:8080 → 33 keys
-node3:8080 → 33 keys
-```
+---
 
-### Test failure handling:
+## Project Structure
 
 ```
-docker stop lsmdb-node3
+lsmdb/
+├── cmd/
+│   ├── main.go          # Node entrypoint
+│   └── demo/            # Legacy demo client (optional)
+├── pkg/
+│   ├── memtable/        # In-memory storage
+│   ├── cluster/         # Router & HashRing 
+│   ├── rpc/             # REST API
+│   ├── store/           # High-level KV interface
+│   ├── raftadapter/     # Raft integration
+│   └── persistence/     # WAL & SSTables
+├── showcase.sh          # Automated cluster demo
+├── docker-compose.yml
+└── README.md
 ```
 
-Output:
-
-```
-[zk] Node removed: node3:8080
-[router] Rebuilding ring...
-```
-
-Remaining nodes continue serving requests.
-
-**Integration Testing:**
-```bash
-# Run complete demo
-./demo_lsm.sh
-
-# Manual testing
-make docker-build
-make docker-run
-curl http://localhost:8081/health
-```
-
-**LSM-Tree Verification:**
-- **Data Flow**: Memtable → WAL → SSTables → Levels
-- **Compaction**: Automatic level-based compaction
-- **Durability**: WAL ensures crash recovery
-- **Performance**: Bloom filters and block cache
-- **Persistence**: Data survives container restarts
-
-**Test Coverage:**
-- Basic CRUD operations (Put, Get, Delete)
-- Memtable flushing to SSTables
-- Multi-level storage organization
-- Compaction behavior
-- Concurrent operations
-- WAL functionality
-- Data persistence
-
-**Available endpoints:**
-- `REST API`: `localhost:8081/api/` (PUT, GET, DELETE operations)
-- `HTTP Health`: `localhost:8081/health`
-- `HTTP Metrics`: `localhost:8081/metrics`
+---
 
 ## Documentation
 
 - **ARCHITECTURE.md** - Detailed architecture documentation
 - **INSTRUCTOR_GUIDE.md** - Guide for instructors
 - **SUBMISSION_GUIDE.md** - Submission evaluation guide
-- **demo_lsm.sh** - Comprehensive demonstration script
 
-## Architecture Overview (interfaces)
+---
+
+## Architecture Overview (Current Implementation)
 ![Architecture photo](docs/images/UML-LSMDB.drawio.png)
-
-- DB Core API (`pkg/db`):
-  - `DB`: `Get/Put/Delete/Write`, high-level search (`Search`, `SearchPrefix`, `SearchRange`), snapshots (`NewSnapshot`), maintenance (`CompactRange`, `Flush`, `Close`).
-  - Options: `ReadOptions`, `WriteOptions`, `OpenOptions`, `SearchOptions`. 
-- Common types (`pkg/types`): `Key`, `Value`, `SequenceNumber`, `ShardID`, `NodeID`, `Term`, `LogIndex`.
-- Search & snapshots:
-  - High-level search methods internally use iterators for efficient range/prefix queries.
-  - `pkg/snapshot.Snapshot`: consistent reads by sequence.
-- Batching & errors:
-  - `pkg/batch.WriteBatch`: group ops atomically.
-  - `pkg/dberrors`: sentinel errors (`ErrNotFound`, etc.).
-- Metrics (`pkg/metrics.Collector`): counters/gauges/histograms (backend-agnostic).
-- Config (`internal/config.Config`): `Storage`, `Compaction`, `Sharding`, `Replication`, `Networking`, `Node` with `Default()`.
-- LSM engine internals (`internal/engine`):
-  - `Memtable`, `MemtableIterator`: in-memory sorted buffer.
-  - `WAL`: durable append & replay (`WALEntry`).
-  - `SSTable`, `TableBuilder`, `TableReader`: immutable on-disk sorted tables.
-  - `Manifest`: persistent versioning of levels/tables (`ManifestState`, `VersionEdit`).
-  - `CompactionPlanner`, `Compactor`: policy + executor of compactions.
-- Cluster & distribution:
-  - `pkg/cluster.Membership`, `Placement`: nodes and ownership of shards.
-  - `pkg/sharding.KeyHasher`, `Router`: key→shard and routing order.
-- Replication & consensus:
-  - `pkg/replication.Log`, `Replicator`, `LogEntry`: replicated log storage + transport.
-  - `pkg/consensus.Consensus`, `FSM`: leader election, propose/apply committed entries.
-- RPC layer (`pkg/rpc`): `KVService`, `AdminService`, `Server` lifecycle & registration.
+* **Storage API (`pkg/store`)**
+  * `Store`: core operations `Put`, `Get`, `Delete`
+  * Acts as a façade over the LSM-Tree engine
+  * Used both locally and via the RPC layer
+* **Common data model**
+  * Keys and values are handled as strings
+  * Node identity and leadership are managed at the cluster / Raft level
+* **LSM-Tree internals**
+  * **Memtable** (`pkg/memtable`)
+    * In-memory sorted data structure
+    * Flushes to disk when size threshold is reached
+  * **WAL (Write-Ahead Log)** (`pkg/persistence`)
+    * Ensures durability of write operations
+    * Replayed on node restart
+  * **SSTables** (`pkg/persistence`)
+    * Immutable on-disk sorted tables
+    * Indexed reads for efficient lookups
+  * **Compaction**
+    * Level-based compaction strategy
+    * Merges SSTables to reduce read amplification
+* **Networking & RPC (`pkg/rpc`)**
+  * HTTP REST API:
+    * `PUT /api/string`
+    * `GET /api/string?key=...`
+    * `DELETE` (endpoint depends on implementation)
+  * `GET /health` for node liveness checks
+  * HTTP server lifecycle and handler registration
+* **Sharding & Request Routing (`pkg/cluster`)**
+  * **Consistent Hashing**
+    * Key → hash → shard
+    * Virtual nodes used for load balancing
+  * **Router**
+    * Determines shard ownership
+    * Executes requests locally or forwards them to remote nodes
+    * Entry point for all client operations
+* **Replication & Consensus (Raft)**
+  * Leader-based replication model
+  * All write operations go through the leader
+  * Followers:
+    * serve read requests, or
+    * return `307 Temporary Redirect` to the leader
+  * Implemented features:
+    * leader election
+    * log replication
+    * failover handling
+    * state recovery after restart
+* **Cluster Execution**
+  * One Docker container = one LSMDB node
+  * Multi-node cluster launched via `docker-compose`
+  * Supports:
+    * leader failure
+    * automatic re-election
+    * log replay and state catch-up
+* **Demo & Testing**
+  * `showcase.sh`
+    * Fully automated demo:
+      * leader election
+      * redirect handling
+      * CRUD operations
+      * failover
+      * recovery
+  * `cmd/demo`
+    * Manual sharding & replication demo
+    * Supports configurable replication factor via `DEMO_RF`
