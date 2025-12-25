@@ -5,18 +5,15 @@ import (
 	"sync"
 )
 
-// Remote - удалённый клиент
 type Remote interface {
 	PutString(key, value string) error
 	GetString(key string) (string, bool, error)
 	Delete(key string) error
 }
 
-// ClientFactory - фабрика удалённых клиентов
 type ClientFactory func(target string) (Remote, error)
 
-// Router упрощенный роутер для шардирования (без репликации - она в Raft)
-// DEPRECATED: Используйте ShardedRaftDB для интеграции с Raft
+// Deprecated: Теперь спользуется ShardedRaftDB
 type Router struct {
 	mu        sync.RWMutex
 	LocalAddr string
@@ -65,7 +62,6 @@ func (r *Router) log(method, key, target string, local bool) {
 	fmt.Printf("[router] %-6s key=%s → %s (%s)\n", method, key, target, where)
 }
 
-// PutString записывает значение на целевую ноду (без репликации)
 func (r *Router) PutString(key, value string) error {
 	target, err := r.owner(key)
 	if err != nil {
@@ -87,7 +83,6 @@ func (r *Router) PutString(key, value string) error {
 	return cl.PutString(key, value)
 }
 
-// GetString читает значение с целевой ноды
 func (r *Router) GetString(key string) (string, bool, error) {
 	target, err := r.owner(key)
 	if err != nil {
@@ -109,7 +104,6 @@ func (r *Router) GetString(key string) (string, bool, error) {
 	return cl.GetString(key)
 }
 
-// Delete удаляет значение на целевой ноде
 func (r *Router) Delete(key string) error {
 	target, err := r.owner(key)
 	if err != nil {

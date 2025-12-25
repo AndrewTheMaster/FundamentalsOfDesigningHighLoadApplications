@@ -85,7 +85,10 @@ func TestShardedRaftDB_LocalCluster(t *testing.T) {
 	}
 
 	// Тест: чтение из локального хранилища
-	store.PutString("local_key", "local_value")
+	err = store.PutString("local_key", "local_value")
+	if err != nil {
+		t.Fatalf("Failed to put local key: %v", err)
+	}
 
 	value, found, err := db.Get(ctx, "local_key")
 	if err != nil {
