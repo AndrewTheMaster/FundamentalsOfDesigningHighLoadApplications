@@ -212,12 +212,14 @@ func TestRemoteAPIErrorHandling(t *testing.T) {
 	node := &fakeRaftNode{store: db}
 
 	// Create server
-	server := NewServer(node, "8081")
+	server := NewServer(node, "8085")
 	if err = server.Start(); err != nil {
 		t.Fatal(err)
 	}
 	//nolint:errcheck
 	defer server.Stop()
+
+	time.Sleep(1 * time.Second)
 
 	t.Run("PUT without key", func(t *testing.T) {
 		formData := "value=test"

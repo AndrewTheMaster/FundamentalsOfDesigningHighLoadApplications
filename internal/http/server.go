@@ -47,7 +47,7 @@ type iShardedDB interface {
 type Server struct {
 	node       iRaftNode
 	store      iStoreAPI
-	shardedDB  iShardedDB // опциональный шардированный слой
+	shardedDB  iShardedDB
 	httpServer *http.Server
 	URL        string
 	addr       string
