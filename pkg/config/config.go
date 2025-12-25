@@ -8,10 +8,27 @@ import (
 // yaml и validate теги для парсинга и валидации
 
 type Config struct {
-	Logger LoggerConfig `yaml:"logger" validate:"required"`
-	Server ServerConfig `yaml:"http-server" validate:"required"`
-	Raft   RaftConfig   `yaml:"raft" validate:"required"`
-	DB     `yaml:"db" validate:"required"`
+	Logger  LoggerConfig  `yaml:"logger" validate:"required"`
+	Server  ServerConfig  `yaml:"http-server" validate:"required"`
+	Raft    RaftConfig    `yaml:"raft" validate:"required"`
+	Cluster ClusterConfig `yaml:"cluster,omitempty"`
+	DB      `yaml:"db" validate:"required"`
+}
+
+// ClusterConfig описывает топологию шардированных Raft кластеров
+type ClusterConfig struct {
+	// ID кластера, к которому принадлежит эта нода
+	LocalClusterID string `yaml:"local_cluster_id"`
+
+	// Список всех кластеров в топологии
+	Clusters []ClusterInfo `yaml:"clusters,omitempty"`
+}
+
+// ClusterInfo описывает один Raft кластер
+type ClusterInfo struct {
+	ID       string   `yaml:"id" validate:"required"`
+	Leader   string   `yaml:"leader" validate:"required"`
+	Replicas []string `yaml:"replicas" validate:"required,dive"`
 }
 
 type RaftConfig struct {

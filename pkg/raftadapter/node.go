@@ -43,6 +43,9 @@ type Node struct {
 
 	proposalsMu sync.RWMutex
 	proposals   map[uuid.UUID]chan proposeResult
+
+	lastActiveMu sync.Mutex
+	lastActive   map[uint64]time.Time
 }
 
 func NewNode(config *config.RaftConfig, store iStoreAPI) (*Node, error) {
@@ -80,12 +83,16 @@ func NewNode(config *config.RaftConfig, store iStoreAPI) (*Node, error) {
 		proposals:    make(map[uuid.UUID]chan proposeResult),
 		ctx:          ctx,
 		stop:         cancel,
+		lastActive:   make(map[uint64]time.Time),
 	}, nil
 }
 
 func (n *Node) Run(ctx context.Context) error {
 	ticker := time.NewTicker(n.tickInterval)
 	defer ticker.Stop()
+
+	// Запускаем мониторинг неактивных пиров
+	go n.monitorInactivePeers(5 * time.Second)
 
 	for {
 		select {
@@ -100,6 +107,41 @@ func (n *Node) Run(ctx context.Context) error {
 			if err := n.handleReady(rd); err != nil {
 				return err
 			}
+		}
+	}
+}
+
+// monitorInactivePeers периодически проверяет неактивных пиров и инициирует их удаление
+func (n *Node) monitorInactivePeers(timeout time.Duration) {
+	checkInterval := timeout / 5
+	if checkInterval < time.Second {
+		checkInterval = time.Second
+	}
+	for {
+		select {
+		case <-n.ctx.Done():
+			return
+		case <-time.After(checkInterval):
+			if !n.IsLeader() {
+				continue
+			}
+			n.lastActiveMu.Lock()
+			now := time.Now()
+			for id, last := range n.lastActive {
+				if id == n.ID {
+					continue // не удаляем себя
+				}
+				if now.Sub(last) > timeout {
+					// инициируем удаление неактивного пира
+					slog.Warn("removing inactive peer", "id", id)
+					cc := raftpb.ConfChange{
+						Type:   raftpb.ConfChangeRemoveNode,
+						NodeID: id,
+					}
+					_ = n.underlying.ProposeConfChange(n.ctx, cc)
+				}
+			}
+			n.lastActiveMu.Unlock()
 		}
 	}
 }
@@ -131,6 +173,16 @@ func (n *Node) handleReady(rd raft.Ready) error {
 	return nil
 }
 
+// Handle обрабатывает входящие Raft-сообщения от других нод
+func (n *Node) Handle(ctx context.Context, msg raftpb.Message) error {
+	if msg.From != 0 && msg.From != n.ID {
+		n.lastActiveMu.Lock()
+		n.lastActive[msg.From] = time.Now()
+		n.lastActiveMu.Unlock()
+	}
+	return n.underlying.Step(ctx, msg)
+}
+
 func (n *Node) updateTransport(cc raftpb.ConfChange) {
 	// Обновляем транспорт
 	switch cc.Type {
@@ -140,13 +192,20 @@ func (n *Node) updateTransport(cc raftpb.ConfChange) {
 		n.Peers[cc.NodeID] = peerAddr
 		n.transport.AddPeer(cc.NodeID, peerAddr)
 		slog.Info("added peer", "id", cc.NodeID, "addr", peerAddr)
+		// также сбрасываем lastActive для нового пира
+		n.lastActiveMu.Lock()
+		n.lastActive[cc.NodeID] = time.Now()
+		n.lastActiveMu.Unlock()
 
 	case raftpb.ConfChangeRemoveNode:
 		// Удаляем пир
 		delete(n.Peers, cc.NodeID)
 		n.transport.RemovePeer(cc.NodeID)
 		slog.Info("removed peer", "id", cc.NodeID)
-
+		// удаляем lastActive
+		n.lastActiveMu.Lock()
+		delete(n.lastActive, cc.NodeID)
+		n.lastActiveMu.Unlock()
 	case raftpb.ConfChangeUpdateNode:
 		// Обновляем адрес
 		peerAddr := string(cc.Context)
@@ -274,11 +333,6 @@ func (n *Node) Execute(ctx context.Context, cmd Cmd) error {
 	case <-ctx.Done():
 		return ctx.Err()
 	}
-}
-
-// Handle обрабатывает входящие Raft-сообщения от других нод
-func (n *Node) Handle(ctx context.Context, msg raftpb.Message) error {
-	return n.underlying.Step(ctx, msg)
 }
 
 func (n *Node) Stop() error {

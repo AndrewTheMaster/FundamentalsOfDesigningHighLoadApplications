@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"lsmdb/pkg/cluster"
 	"lsmdb/pkg/raftadapter"
 	"lsmdb/pkg/store"
 	"net/http"
@@ -35,16 +36,24 @@ type iRaftNode interface {
 	Stop() error
 }
 
+// iShardedDB - интерфейс для шардированной БД
+type iShardedDB interface {
+	Put(ctx context.Context, key, value string) error
+	Get(ctx context.Context, key string) (string, bool, error)
+	Delete(ctx context.Context, key string) error
+}
+
 // Server represents the HTTP server with storage
 type Server struct {
 	node       iRaftNode
 	store      iStoreAPI
+	shardedDB  iShardedDB
 	httpServer *http.Server
 	URL        string
 	addr       string
 }
 
-// NewServer creates a new server instance. Accepts any implementation of iStoreAPI (including *store.Store).
+// NewServer creates a new server instance
 func NewServer(node iRaftNode, port string) *Server {
 	if port == "" {
 		port = defaultHTTPPort
@@ -56,13 +65,32 @@ func NewServer(node iRaftNode, port string) *Server {
 	}
 }
 
+// NewShardedServer creates a new server with sharding support
+func NewShardedServer(shardedDB *cluster.ShardedRaftDB, store iStoreAPI, port string) *Server {
+	if port == "" {
+		port = defaultHTTPPort
+	}
+	return &Server{
+		shardedDB: shardedDB,
+		store:     store,
+		URL:       "http://localhost:" + port,
+		addr:      ":" + port,
+	}
+}
+
+func (s *Server) SetStore(store iStoreAPI) {
+	s.store = store
+}
+
 // Start starts the server
 func (s *Server) Start() error {
-	go func() {
-		if err := s.node.Run(context.Background()); err != nil {
-			slog.Error("Raft node error", "error", err)
-		}
-	}()
+	if s.node != nil {
+		go func() {
+			if err := s.node.Run(context.Background()); err != nil {
+				slog.Error("Raft node error", "error", err)
+			}
+		}()
+	}
 	if err := s.startHTTPServer(); err != nil {
 		return fmt.Errorf("failed to start HTTP server: %w", err)
 	}
@@ -78,7 +106,9 @@ func (s *Server) Stop() error {
 		if err := s.httpServer.Shutdown(ctx); err != nil {
 			return fmt.Errorf("failed to shutdown HTTP server: %w", err)
 		}
-		_ = s.node.Stop()
+		if s.node != nil {
+			_ = s.node.Stop()
+		}
 	}
 	return nil
 }
@@ -92,7 +122,11 @@ func (s *Server) createRouter() http.Handler {
 	r.Put("/api/string", s.handlePut)
 	r.Get("/api/string", s.handleGet)
 	r.Delete("/api", s.handleDelete)
-	r.Post("/api/internal/raft", s.handleRaft)
+
+	// Raft endpoint только если есть node
+	if s.node != nil {
+		r.Post("/api/internal/raft", s.handleRaft)
+	}
 
 	return r
 }
@@ -123,6 +157,11 @@ func (s *Server) writeJSON(w http.ResponseWriter, status int, data interface{}) 
 }
 
 func (s *Server) redirectLeader(w http.ResponseWriter, r *http.Request) (bool, error) {
+	// Редирект работает только при прямом использовании Raft (без шардирования)
+	if s.node == nil || s.shardedDB != nil {
+		return false, nil
+	}
+
 	if !s.node.IsLeader() {
 		leaderAddr := s.node.LeaderAddr()
 		if leaderAddr == "" {
@@ -158,13 +197,6 @@ func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handlePut(w http.ResponseWriter, r *http.Request) {
-	if redirected, err := s.redirectLeader(w, r); redirected || err != nil {
-		if err != nil {
-			slog.Error("Failed to redirect to leader", "error", err)
-		}
-		return
-	}
-
 	if err := r.ParseForm(); err != nil {
 		s.writeJSON(w, http.StatusBadRequest, NewErrorResponse("Failed to parse form"))
 		return
@@ -175,6 +207,24 @@ func (s *Server) handlePut(w http.ResponseWriter, r *http.Request) {
 
 	if key == "" || value == "" {
 		s.writeJSON(w, http.StatusBadRequest, NewErrorResponse("Missing key or value"))
+		return
+	}
+
+	// Если используется шардирование - используем ShardedDB
+	if s.shardedDB != nil {
+		if err := s.shardedDB.Put(r.Context(), key, value); err != nil {
+			s.writeJSON(w, http.StatusInternalServerError, NewErrorResponse(err.Error()))
+			return
+		}
+		s.writeJSON(w, http.StatusOK, NewSuccessResponse())
+		return
+	}
+
+	// Иначе используем прямой Raft
+	if redirected, err := s.redirectLeader(w, r); redirected || err != nil {
+		if err != nil {
+			slog.Error("Failed to redirect to leader", "error", err)
+		}
 		return
 	}
 
@@ -194,7 +244,17 @@ func (s *Server) handleGet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	value, found, err := s.store.GetString(key)
+	var value string
+	var found bool
+	var err error
+
+	// Если используется шардирование - используем ShardedDB
+	if s.shardedDB != nil {
+		value, found, err = s.shardedDB.Get(r.Context(), key)
+	} else {
+		value, found, err = s.store.GetString(key)
+	}
+
 	if err != nil {
 		s.writeJSON(w, http.StatusInternalServerError, NewErrorResponse(err.Error()))
 		return
@@ -209,16 +269,27 @@ func (s *Server) handleGet(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
+	key := r.URL.Query().Get("key")
+	if key == "" {
+		s.writeJSON(w, http.StatusBadRequest, NewErrorResponse("Missing key"))
+		return
+	}
+
+	// Если используется шардирование - используем ShardedDB
+	if s.shardedDB != nil {
+		if err := s.shardedDB.Delete(r.Context(), key); err != nil {
+			s.writeJSON(w, http.StatusInternalServerError, NewErrorResponse(err.Error()))
+			return
+		}
+		s.writeJSON(w, http.StatusOK, NewSuccessResponse())
+		return
+	}
+
+	// Иначе используем прямой Raft
 	if redirected, err := s.redirectLeader(w, r); redirected || err != nil {
 		if err != nil {
 			slog.Error("Failed to redirect to leader", "error", err)
 		}
-		return
-	}
-
-	key := r.URL.Query().Get("key")
-	if key == "" {
-		s.writeJSON(w, http.StatusBadRequest, NewErrorResponse("Missing key"))
 		return
 	}
 
@@ -232,13 +303,20 @@ func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleRaft(w http.ResponseWriter, r *http.Request) {
+	if s.node == nil {
+		s.writeJSON(w, http.StatusServiceUnavailable, NewErrorResponse("Raft node not available"))
+		return
+	}
+
 	dec := json.NewDecoder(r.Body)
 	var msg raftpb.Message
 	if err := dec.Decode(&msg); err != nil {
-		s.writeJSON(w, http.StatusInternalServerError, NewErrorResponse(err.Error()))
+		s.writeJSON(w, http.StatusBadRequest, NewErrorResponse(err.Error()))
+		return
 	}
 	if err := s.node.Handle(r.Context(), msg); err != nil {
 		s.writeJSON(w, http.StatusInternalServerError, NewErrorResponse(err.Error()))
+		return
 	}
 
 	s.writeJSON(w, http.StatusOK, NewSuccessResponse())

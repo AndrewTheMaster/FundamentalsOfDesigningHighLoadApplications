@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"log/slog"
 	"lsmdb/internal/http"
+	"lsmdb/pkg/cluster"
+	"lsmdb/pkg/config"
 	"lsmdb/pkg/raftadapter"
 	"lsmdb/pkg/store"
 	"lsmdb/pkg/wal"
@@ -44,20 +46,65 @@ func main() {
 		panic(err)
 	}
 
-	// Create server
-	server := http.NewServer(
-		node,
-		fmt.Sprintf("%d", cfg.Server.Port),
-	)
+	var server *http.Server
+
+	if len(cfg.Cluster.Clusters) > 0 {
+		slog.Info("Starting in sharded mode",
+			"local_cluster", cfg.Cluster.LocalClusterID,
+			"total_clusters", len(cfg.Cluster.Clusters))
+
+		localAddr := getLocalAddress(&cfg)
+		shardedDB := cluster.NewShardedRaftDB(
+			localAddr,
+			node,
+			db,
+			func(addr string) (cluster.Remote, error) {
+				return cluster.NewHTTPClient(addr), nil
+			},
+		)
+
+		for _, clusterInfo := range cfg.Cluster.Clusters {
+			shardedDB.AddCluster(
+				clusterInfo.ID,
+				clusterInfo.Leader,
+				clusterInfo.Replicas,
+			)
+		}
+
+		go func() {
+			if err := node.Run(context.Background()); err != nil {
+				slog.Error("Raft node error", "error", err)
+			}
+		}()
+
+		server = http.NewShardedServer(
+			shardedDB,
+			db,
+			fmt.Sprintf("%d", cfg.Server.Port),
+		)
+	} else {
+		slog.Info("Starting in single Raft cluster mode")
+
+		// Обычный режим - один Raft кластер без шардирования
+		server = http.NewServer(
+			node,
+			fmt.Sprintf("%d", cfg.Server.Port),
+		)
+		server.SetStore(db)
+	}
+
 	if err := server.Start(); err != nil {
 		slog.Error("Failed to start server", "error", err)
 		return
 	}
 
-	slog.Info("gRPC server running", "port", cfg.Server.Port)
+	slog.Info("HTTP server running", "port", cfg.Server.Port)
 	slog.Info("Press Ctrl+C to stop...")
 
-	demo(db)
+	// Demo operations только в single mode
+	if len(cfg.Cluster.Clusters) == 0 {
+		demo(db)
+	}
 
 	<-ctx.Done()
 
@@ -67,6 +114,15 @@ func main() {
 	}
 
 	slog.Info("LSMDB terminated")
+}
+
+func getLocalAddress(cfg *config.Config) string {
+	for _, peer := range cfg.Raft.Peers {
+		if peer.ID == cfg.Raft.ID {
+			return peer.Address
+		}
+	}
+	return fmt.Sprintf("http://localhost:%d", cfg.Server.Port)
 }
 
 func demo(db *store.Store) {
