@@ -1,0 +1,48 @@
+services:
+  node1:
+    build: .
+    container_name: node1
+    environment:
+      - LSMDB_RAFT_ID=1
+      - LSMDB_RAFT_PEERS=1=http://node1:8080,2=http://node2:8080,3=http://node3:8080
+      - LSMDB_PUBLIC_PEERS=1=http://localhost:8081,2=http://localhost:8082,3=http://localhost:8083
+      - LSMDB_ADVERTISE_URL=http://node1:8080
+      - LSMDB_RF=2
+      - LSMDB_VNODES=100
+      - LSMDB_DATA_DIR=/data
+    ports:
+      - "8081:8080"
+    volumes:
+      - ./data/node1:/data
+
+  node2:
+    build: .
+    container_name: node2
+    environment:
+      - LSMDB_RAFT_ID=2
+      - LSMDB_RAFT_PEERS=1=http://node1:8080,2=http://node2:8080,3=http://node3:8080
+      - LSMDB_PUBLIC_PEERS=1=http://localhost:8081,2=http://localhost:8082,3=http://localhost:8083
+      - LSMDB_ADVERTISE_URL=http://node2:8080
+      - LSMDB_RF=2
+      - LSMDB_VNODES=100
+      - LSMDB_DATA_DIR=/data
+    ports:
+      - "8082:8080"
+    volumes:
+      - ./data/node2:/data
+
+  node3:
+    build: .
+    container_name: node3
+    environment:
+      - LSMDB_RAFT_ID=3
+      - LSMDB_RAFT_PEERS=1=http://node1:8080,2=http://node2:8080,3=http://node3:8080
+      - LSMDB_PUBLIC_PEERS=1=http://localhost:8081,2=http://localhost:8082,3=http://localhost:8083
+      - LSMDB_ADVERTISE_URL=http://node3:8080
+      - LSMDB_RF=2
+      - LSMDB_VNODES=100
+      - LSMDB_DATA_DIR=/data
+    ports:
+      - "8083:8080"
+    volumes:
+      - ./data/node3:/data

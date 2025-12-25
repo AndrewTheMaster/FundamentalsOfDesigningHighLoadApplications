@@ -1,0 +1,67 @@
+# .golangci.yml - updated
+run:
+  go: "1.22"
+  timeout: 5m
+  tests: true
+  concurrency: 4
+
+linters:
+  disable-all: true
+  enable:
+    - govet
+    - staticcheck
+    - errcheck
+    - gosimple
+    - ineffassign
+    - gofmt
+    - goimports
+    - revive
+    - gocritic
+    - gosec
+    - unused        # заменяет deprecated deadcode/structcheck
+    - typecheck
+    - misspell
+    - bodyclose
+
+linters-settings:
+  gosec:
+    excludes:
+      - G115
+
+  errcheck:
+    check-type-assertions: true
+    check-blank: false
+
+  revive:
+    ignoreGeneratedHeader: true
+    severity: warning
+
+  gocritic:
+    disabled-checks:
+      - hugeParam
+
+  misspell:
+    locale: US
+
+  gofmt:
+    simplify: true
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
+
+  # заменяем устаревшие skip-dirs / skip-files
+  exclude-files:
+    - ".*\\.gen\\.go"
+    - ".*\\.pb\\.go"
+    - ".*_mock\\.go"
+  exclude-dirs:
+    - vendor
+    - build
+    - third_party
+
+  exclude:
+    - "generated|DO NOT EDIT"
+    - "should have comment or be unexported"
+    - "Error return value is not checked.*(Close|Write|Fsync)"
+    - "SA1019"

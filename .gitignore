@@ -19,5 +19,5 @@ bin/
 .DS_Store
 
 # Local data
-/data/
-/tmp/ 
+data/
+tmp/
