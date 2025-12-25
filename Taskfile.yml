@@ -19,6 +19,11 @@ tasks:
     cmds:
       - go test -count=1 ./...
 
+  integration-test:
+    desc: "Run integration tests"
+    cmds:
+      - go test -v -tags=integration -timeout=5m ./tests/integration/... -run TestShardedRaftIntegration
+
   test-coverage:
     desc: "Run tests with coverage"
     cmds:

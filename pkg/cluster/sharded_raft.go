@@ -104,6 +104,25 @@ func (s *ShardedRaftDB) UpdateClusterLeader(clusterID string, newLeaderAddr stri
 }
 
 // getClusterForKey определяет, какой Raft кластер отвечает за ключ
+func (s *ShardedRaftDB) GetClusterForKey(key string) (string, error) {
+	// Используем consistent hashing для определения кластера
+	clusterID, ok := s.ring.GetNode(key)
+	if !ok {
+		return "", fmt.Errorf("no cluster available for key: %s", key)
+	}
+
+	s.clustersMu.RLock()
+	_, ok = s.clusters[clusterID]
+	s.clustersMu.RUnlock()
+
+	if !ok {
+		return "", fmt.Errorf("cluster not found: %s", clusterID)
+	}
+
+	return clusterID, nil
+}
+
+// getClusterForKey определяет, какой Raft кластер отвечает за ключ (внутренний метод)
 func (s *ShardedRaftDB) getClusterForKey(key string) (*RaftCluster, error) {
 	// Используем consistent hashing для определения кластера
 	clusterID, ok := s.ring.GetNode(key)
