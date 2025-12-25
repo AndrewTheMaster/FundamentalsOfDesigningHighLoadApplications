@@ -401,7 +401,7 @@ func TestShardedRaftIntegration(t *testing.T) {
 
 	// ждем перевыбора нового лидера
 	t.Log("\n[STEP 8] Waiting for new leader election in cluster1...")
-	time.Sleep(5 * time.Second) // Даем время на выборы
+	time.Sleep(10 * time.Second) // Даем время на выборы
 
 	newLeader1, err := cluster1.waitForLeader(t, 15*time.Second)
 	if err != nil {
