@@ -1,0 +1,61 @@
+# Пример конфигурации для шардированного кластера
+
+logger:
+  level: INFO
+  json: false
+
+http-server:
+  port: 8080
+  read_header_timeout: 2006-01-02T15:04:05Z
+
+# Конфигурация локального Raft кластера
+raft:
+  id: 1
+  election_tick: 10
+  heartbeat_tick: 1
+  max_size_per_msg: 1048576
+  max_committed_size_per_ready: 1048576
+  max_uncommitted_entries_size: 1048576
+  max_inflight_msgs: 256
+  check_quorum: true
+  pre_vote: true
+  peers:
+    - id: 1
+      address: "http://localhost:8080"
+    - id: 2
+      address: "http://localhost:8081"
+    - id: 3
+      address: "http://localhost:8082"
+
+# Конфигурация шардирования (опционально)
+cluster:
+  local_cluster_id: "cluster1"
+  clusters:
+    - id: "cluster1"
+      leader: "http://localhost:8080"
+      replicas:
+        - "http://localhost:8080"
+        - "http://localhost:8081"
+        - "http://localhost:8082"
+    - id: "cluster2"
+      leader: "http://localhost:9080"
+      replicas:
+        - "http://localhost:9080"
+        - "http://localhost:9081"
+        - "http://localhost:9082"
+
+db:
+  memtable:
+    flush_threshold: 65536
+    flush_chan_buff_size: 3
+    max_imm_tables: 3
+  persistence:
+    path: "./data"
+    sstable:
+      size_multiplier: 10
+      compact_threshold: 4
+    cache:
+      capacity: 1000
+    bloom_filter:
+      fp_rate: 0.01
+
