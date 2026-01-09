@@ -19,5 +19,10 @@ bin/
 .DS_Store
 
 # Local data
-/data/
-/tmp/ 
+data/
+tmp/
+
+# Coursework documents
+COURSEWORK.md
+COURSEWORK_NEW.md
+DEFENSE_PLAN.md
