@@ -48,28 +48,45 @@ wait_health() {
 #  - фолловер отвечает 307 (redirect to leader)
 detect_leader() {
   local tries="${1:-30}"   # 30 * 0.5s = 15s
-  local i u code loc
+  local i u code loc leader_url
   for ((i=0; i<tries; i++)); do
     for u in "${NODES[@]}"; do
+      # Сначала проверяем доступность узла (health check)
+      health_code="$(curl -s -o /dev/null -w "%{http_code}" \
+        --connect-timeout 1 --max-time 2 \
+        "$u/health" 2>/dev/null || echo "000")"
+      
+      # Пропускаем недоступные узлы
+      if [[ "$health_code" != "200" ]]; then
+        continue
+      fi
+      
       loc="$(curl -s -o /dev/null -D - \
         --connect-timeout 1 --max-time 2 \
         -X PUT "$u/api/string" -d "key=__leader_probe__&value=1" \
+        2>/dev/null \
         | awk -F': ' 'tolower($1)=="location"{print $2}' | tr -d '\r')"
       code="$(curl -s -o /dev/null -w "%{http_code}" \
         --connect-timeout 1 --max-time 2 \
-        -X PUT "$u/api/string" -d "key=__leader_probe__&value=1" || true)"
+        -X PUT "$u/api/string" -d "key=__leader_probe__&value=1" 2>/dev/null || echo "000")"
 
       if [[ "$code" == "200" ]]; then
-        echo "$u"
-        return 0
+        # Проверяем, что найденный лидер действительно доступен
+        leader_url="$u"
+        if curl -s -o /dev/null -w "%{http_code}" --connect-timeout 1 --max-time 2 "$leader_url/health" 2>/dev/null | grep -q "200"; then
+          echo "$leader_url"
+          return 0
+        fi
       fi
       if [[ "$code" == "307" && -n "$loc" ]]; then
         if [[ "$loc" == http* ]]; then
-          echo "${loc%/api/string}"
-        else
-          echo "$u" # fallback
+          leader_url="${loc%/api/string}"
+          # Проверяем, что лидер из Location действительно доступен
+          if curl -s -o /dev/null -w "%{http_code}" --connect-timeout 1 --max-time 2 "$leader_url/health" 2>/dev/null | grep -q "200"; then
+            echo "$leader_url"
+            return 0
+          fi
         fi
-        return 0
       fi
     done
     sleep 0.5
