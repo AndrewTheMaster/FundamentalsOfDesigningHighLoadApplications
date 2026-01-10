@@ -75,7 +75,7 @@ detect_leader() {
         leader_url="$u"
         if curl -s -o /dev/null -w "%{http_code}" --connect-timeout 1 --max-time 2 "$leader_url/health" 2>/dev/null | grep -q "200"; then
           echo "$leader_url"
-          return 0
+        return 0
         fi
       fi
       if [[ "$code" == "307" && -n "$loc" ]]; then
@@ -84,7 +84,7 @@ detect_leader() {
           # Проверяем, что лидер из Location действительно доступен
           if curl -s -o /dev/null -w "%{http_code}" --connect-timeout 1 --max-time 2 "$leader_url/health" 2>/dev/null | grep -q "200"; then
             echo "$leader_url"
-            return 0
+        return 0
           fi
         fi
       fi
@@ -320,6 +320,144 @@ code="$(curl -s -o /dev/null -w "%{http_code}" \
 body="$(curl -s --connect-timeout 2 --max-time 4 \
   "$recover_url/api/string?key=$k2" || true)"
 info "   GET recovered -> HTTP $code  body: $body"
+echo
+
+# Quorum Loss Test
+info "7) Quorum Loss Test: stop 2 of 3 nodes (no quorum, cluster should stop accepting writes)"
+
+# Put a key before quorum loss
+k3="before-quorum-loss"
+v3="test-value"
+put_key_no_redirect "$BASE" "$k3" "$v3"
+info "   Put key before quorum loss: $k3=$v3"
+
+# Determine which nodes to stop (stop 2 nodes, leave 1)
+leader_before_quorum="$(detect_leader || true)"
+if [[ -z "$leader_before_quorum" ]]; then
+  warn "Could not detect leader before quorum test"
+  leader_before_quorum="$BASE"
+fi
+
+# Stop 2 nodes (all except one)
+nodes_to_stop=()
+remaining_node=""
+for u in "${NODES[@]}"; do
+  node_name="$(node_name_from_url "$u")"
+  if [[ "$node_name" != "$(node_name_from_url "$leader_before_quorum")" ]]; then
+    nodes_to_stop+=("$node_name")
+    if [[ ${#nodes_to_stop[@]} -eq 2 ]]; then
+      break
+    fi
+  fi
+done
+
+# If we don't have 2 nodes to stop, stop any 2
+if [[ ${#nodes_to_stop[@]} -lt 2 ]]; then
+  nodes_to_stop=("node2" "node3")
+fi
+
+remaining_node=""
+for u in "${NODES[@]}"; do
+  node_name="$(node_name_from_url "$u")"
+  skip=false
+  for stop_node in "${nodes_to_stop[@]}"; do
+    if [[ "$node_name" == "$stop_node" ]]; then
+      skip=true
+      break
+    fi
+  done
+  if [[ "$skip" == false ]]; then
+    remaining_node="$u"
+    break
+  fi
+done
+
+info "   Stopping 2 nodes (quorum loss): ${nodes_to_stop[*]}"
+info "   Remaining node: $remaining_node (should not be able to accept writes)"
+
+for stop_node in "${nodes_to_stop[@]}"; do
+  docker compose stop "$stop_node"
+done
+
+# Wait a bit for cluster to detect quorum loss
+sleep 3
+
+# Try to write to remaining node - should fail or hang
+info "   Attempting PUT to remaining node (should fail without quorum)"
+quorum_test_key="quorum-test-key"
+quorum_test_value="should-fail"
+quorum_code=""
+quorum_code="$(curl -s -o /dev/null -w "%{http_code}" \
+  --connect-timeout 2 --max-time 5 \
+  -X PUT "$remaining_node/api/string" -d "key=$quorum_test_key&value=$quorum_test_value" || echo "000")"
+
+if [[ "$quorum_code" == "200" ]]; then
+  warn "   PUT succeeded without quorum (unexpected - may indicate timing issue)"
+elif [[ "$quorum_code" == "307" ]]; then
+  warn "   Got redirect without quorum (leader may still be trying to replicate)"
+elif [[ "$quorum_code" == "000" || "$quorum_code" == "500" || "$quorum_code" == "503" ]]; then
+  info "   PUT failed/hung without quorum ✅ (expected behavior)"
+else
+  # Normalize code (remove leading zeros if any)
+  normalized_code=$(echo "$quorum_code" | sed 's/^0*//')
+  if [[ -z "$normalized_code" || "$normalized_code" == "000" ]]; then
+    info "   PUT failed/hung without quorum ✅ (expected behavior - connection timeout/refused)"
+  else
+    info "   PUT returned HTTP $normalized_code (cluster may be in degraded state)"
+  fi
+fi
+
+# Try to read - should still work if data was replicated
+info "   Attempting GET from remaining node (reads may still work)"
+read_code="$(curl -s -o /dev/null -w "%{http_code}" \
+  --connect-timeout 2 --max-time 4 \
+  "$remaining_node/api/string?key=$k3" || echo "000")"
+if [[ "$read_code" == "200" ]]; then
+  info "   GET succeeded (read-only access may work without quorum)"
+else
+  info "   GET returned HTTP $read_code"
+fi
+
+# Restore quorum
+info "   Restoring quorum: starting stopped nodes"
+for stop_node in "${nodes_to_stop[@]}"; do
+  docker compose start "$stop_node"
+done
+
+# Wait for nodes to recover
+info "   Waiting for nodes to become healthy"
+for stop_node in "${nodes_to_stop[@]}"; do
+  recover_url=""
+  if [[ "$MODE" == "docker" ]]; then
+    recover_url="http://${stop_node}:8080"
+  else
+    if [[ "$stop_node" == "node1" ]]; then recover_url="http://localhost:8081"; fi
+    if [[ "$stop_node" == "node2" ]]; then recover_url="http://localhost:8082"; fi
+    if [[ "$stop_node" == "node3" ]]; then recover_url="http://localhost:8083"; fi
+  fi
+  if [[ -n "$recover_url" ]]; then
+    wait_health "$recover_url" || warn "   Node $stop_node health check timeout"
+  fi
+done
+
+# Wait for leader election
+sleep 2
+final_leader="$(detect_leader 20 || true)"
+if [[ -n "$final_leader" ]]; then
+  info "   Leader re-elected after quorum restored: $final_leader ✅"
+else
+  warn "   Leader not detected after quorum restore"
+fi
+
+# Verify cluster is operational again
+info "   Verifying cluster is operational after quorum restore"
+test_key="after-quorum-restore"
+test_value="cluster-working"
+if put_key_no_redirect "$final_leader" "$test_key" "$test_value" 2>/dev/null; then
+  info "   Cluster operational after quorum restore ✅"
+else
+  warn "   Cluster may still be recovering"
+fi
 echo
 
 info "DONE ✅ Cluster showcase finished."
