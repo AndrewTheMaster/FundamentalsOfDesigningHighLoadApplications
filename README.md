@@ -228,26 +228,31 @@ Nodes are exposed on:
 
 ### showcase.sh — **primary demo script**
 
-This script fully automates the demonstration required for submission.
+This script fully automates the demonstration required for submission. It performs comprehensive testing of the Raft cluster including leader election, failover, recovery, and quorum loss scenarios.
+
+### Usage
 
 ```bash
 chmod +x showcase.sh
-./showcase.sh host
+./showcase.sh host    # Run from host (uses localhost:8081-8083)
+./showcase.sh docker  # Run from Docker network (uses node1-3:8080)
 ```
 
 ### What the showcase demonstrates:
 
-1. Cluster startup
-2. Health check on all nodes
-3. Leader detection
-4. PUT request handling
-5. Redirect from follower to leader
-6. GET from all nodes
-7. DELETE operation
-8. Leader failure (container stop)
-9. Leader re-election
-10. Continued availability of data
-11. Node recovery and log catch-up
+1. **Cluster startup** - Builds and starts 3-node cluster using Docker Compose, waits for all nodes to become healthy
+2. **Health check on all nodes** - Verifies node availability before operations
+3. **Leader detection** - Detects current Raft leader using PUT probe (leader=200, follower=307), verifies leader availability
+4. **PUT request handling** - Writes key-value pair via leader, demonstrates write operations
+5. **Redirect from follower to leader** - Shows follower redirecting write requests to leader (HTTP 307 Temporary Redirect)
+6. **GET from all nodes** - Reads from all nodes demonstrating cluster-wide read availability
+7. **DELETE operation** - Removes key via leader, verifies deletion across all nodes
+8. **Leader failure (container stop)** - Stops current leader container to simulate node failure
+9. **Leader re-election** - Waits for new leader election, verifies automatic failover
+10. **Continued availability of data** - Verifies data remains accessible from remaining nodes after leader failure
+11. **Node recovery and log catch-up** - Restarts stopped node, waits for recovery, verifies node catches up with cluster state and can read previously written data
+12. **Quorum loss test** - Stops 2 of 3 nodes (loses majority), attempts write (should fail/hang), demonstrates cluster cannot accept writes without quorum
+13. **Quorum restoration** - Restores quorum by starting stopped nodes, confirms leader re-election and cluster recovery
 
 This script is **safe to run from host** and does not rely on internal Docker DNS.
 
